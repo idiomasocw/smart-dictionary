@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json.schemastore.org/nest-cli",
+  "collection": "@nestjs/schematics",
+  "sourceRoot": "apps/smart-dictionary-backend/src",
+  "compilerOptions": {
+    "deleteOutDir": true,
+    "webpack": true,
+    "tsConfigPath": "apps/smart-dictionary-backend/tsconfig.app.json"
+  },
+  "monorepo": true,
+  "root": "apps/smart-dictionary-backend",
+  "projects": {
+    "smart-dictionary-backend": {
+      "type": "application",
+      "root": "apps/smart-dictionary-backend",
+      "entryFile": "main",
+      "sourceRoot": "apps/smart-dictionary-backend/src",
+      "compilerOptions": {
+        "tsConfigPath": "apps/smart-dictionary-backend/tsconfig.app.json"
+      }
+    },
+    "worker": {
+      "type": "application",
+      "root": "apps/worker",
+      "entryFile": "main",
+      "sourceRoot": "apps/worker/src",
+      "compilerOptions": {
+        "tsConfigPath": "apps/worker/tsconfig.app.json"
+      }
+    }
+  }
+}
