@@ -10,13 +10,13 @@
   "monorepo": true,
   "root": "apps/smart-dictionary-backend",
   "projects": {
-    "smart-dictionary-backend": {
+    "app": {
       "type": "application",
-      "root": "apps/smart-dictionary-backend",
+      "root": "apps/app",
       "entryFile": "main",
-      "sourceRoot": "apps/smart-dictionary-backend/src",
+      "sourceRoot": "apps/app/src",
       "compilerOptions": {
-        "tsConfigPath": "apps/smart-dictionary-backend/tsconfig.app.json"
+        "tsConfigPath": "apps/app/tsconfig.app.json"
       }
     },
     "worker": {
