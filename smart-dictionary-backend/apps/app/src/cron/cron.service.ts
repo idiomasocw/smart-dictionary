@@ -16,7 +16,7 @@ export class CronService {
     ) {
         this.supabase = createClient(
             this.configService.get<string>('SUPABASE_URL') || process.env.SUPABASE_URL || 'http://localhost:56321',
-            this.configService.get<string>('SUPABASE_SECRET_KEY') || process.env.SUPABASE_SECRET_KEY || 'mock-secret',
+            this.configService.get<string>('SUPABASE_KEY') || process.env.SUPABASE_KEY || 'mock-key',
         );
     }
 
