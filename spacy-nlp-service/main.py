@@ -52,7 +52,8 @@ async def lemmatize_word(request: LemmatizeRequest):
     if len(doc) == 0:
         raise HTTPException(status_code=400, detail="Empty word provided")
         
-    lemma = doc[0].lemma_.lower()
+    # Iterate through all tokens to support collocations and phrasal verbs
+    lemma = " ".join([token.lemma_.lower() for token in doc])
     
     return LemmatizeResponse(
         original=request.word,
