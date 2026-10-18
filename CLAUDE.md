@@ -37,6 +37,8 @@ uv run smart-dictionary migrate            # alembic upgrade head
 uv run smart-dictionary data fetch --all   # open datasets into data/raw/ (gitignored)
 uv run smart-dictionary data import --all  # load them into the ref_* tables
 uv run smart-dictionary fixtures load      # publish the hand-written entries in fixtures/
+uv run smart-dictionary seeds import       # seed_candidates from the owner's and open lists
+uv run smart-dictionary seeds export       # the ranked candidates, to data/raw/seed-candidates.csv
 uv run smart-dictionary api                # http://127.0.0.1:8000
 ```
 

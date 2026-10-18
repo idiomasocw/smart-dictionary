@@ -18,6 +18,8 @@ uv run smart-dictionary api                # http://127.0.0.1:8000/healthz
 
 `smart-dictionary data list` shows the datasets in `../data/datasets.toml`; `data fetch` and `data import` also take dataset ids instead of `--all`.
 
+`smart-dictionary seeds import` builds `seed_candidates` from `../data/seeds/owner/owner-seeds.csv` (written by `../scripts/normalize_owner_lists.py`) and the open lists, and `seeds export` writes them, ranked, to `../data/raw/seed-candidates.csv`. Seed candidates join the Wiktionary keep set, so after the first `seeds import`, run `data import kaikki-en` and then `seeds import` again.
+
 The read API (`/v1/lookup`, `/v1/suggest`, `/v1/entries/{key}`) is specified in design §5, and outside production its interactive docs are at `/docs`. Errors are `application/problem+json`. When `BBB_PROXY_SECRET` is set, every `/v1` request needs the proxy's `X-Dict-Secret` header.
 
 ## Checks
@@ -39,7 +41,8 @@ uv run pyright
 | `src/smart_dictionary/search/` | Lookup and autocomplete: the SQL generators and their ranking |
 | `src/smart_dictionary/content/` | Publishing entry documents, their search projections and the student's entry card |
 | `src/smart_dictionary/importers/` | Fetchers and parsers that load the open datasets into the `ref_*` tables |
-| `src/smart_dictionary/cli.py` | `smart-dictionary api \| migrate \| schema \| data \| fixtures`; `worker` arrives with the job queue |
+| `src/smart_dictionary/seeds/` | The seed builder: the owner's seed file and the open lists, as ranked `seed_candidates` |
+| `src/smart_dictionary/cli.py` | `smart-dictionary api \| migrate \| schema \| data \| fixtures \| seeds`; `worker` arrives with the job queue |
 | `fixtures/` | Hand-written development entries (EntryDoc JSON), also used by the tests |
 | `migrations/` | Alembic revisions, written as plain SQL; no autogenerate |
 | `tests/` | pytest; database tests run on throwaway databases and skip themselves when no database is reachable |

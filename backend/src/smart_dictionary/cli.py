@@ -1,10 +1,11 @@
-"""Command-line entry point: `smart-dictionary api | migrate | schema | data`.
+"""Command-line entry point: `smart-dictionary api | migrate | schema | data | fixtures | seeds`.
 
 The container image runs api and migrate; `worker` joins them with the job queue.
 """
 
 import argparse
 import sys
+from pathlib import Path
 
 from smart_dictionary.paths import BACKEND_DIR, SCHEMA_PATH
 
@@ -95,6 +96,26 @@ def _fixtures_load() -> None:
     print(f"published {len(keys)} fixture entries")
 
 
+def _seeds(action: str, path: Path | None, out: Path | None) -> None:
+    from smart_dictionary.core.logging import configure_logging
+    from smart_dictionary.db.sync import connect
+    from smart_dictionary.paths import OWNER_SEEDS, SEED_EXPORT
+    from smart_dictionary.seeds import builder, owner, store
+
+    configure_logging("INFO")
+    with connect() as conn:
+        if action == "export":
+            target = out or SEED_EXPORT
+            print(f"{store.export(conn, target)} candidates -> {target}")
+            return
+        rows = owner.read_owner_seeds(path or OWNER_SEEDS)
+        reference = builder.load_reference(conn)
+        candidates = builder.build(rows, reference)
+        inserted, updated = store.store(conn, candidates)
+    print(builder.summary(candidates, reference))
+    print(f"stored {inserted} candidates; {updated} already decided ones updated in place")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="smart-dictionary")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -120,6 +141,15 @@ def main(argv: list[str] | None = None) -> None:
     fixtures = commands.add_parser("fixtures", help="development entries (backend/fixtures)")
     fixtures.add_argument("action", choices=["load"])
 
+    seeds = commands.add_parser("seeds", help="seed candidates from the owner's and open lists")
+    seeds.add_argument("action", choices=["import", "export"])
+    seeds.add_argument(
+        "--file", type=Path, help="seed CSV (default data/seeds/owner/owner-seeds.csv)"
+    )
+    seeds.add_argument(
+        "--out", type=Path, help="export path (default data/raw/seed-candidates.csv)"
+    )
+
     args = parser.parse_args(argv)
     if args.command == "api":
         _api(args.host, args.port, args.reload)
@@ -131,3 +161,5 @@ def main(argv: list[str] | None = None) -> None:
         _data(args.action, args.ids, args.every, args.force)
     elif args.command == "fixtures":
         _fixtures_load()
+    elif args.command == "seeds":
+        _seeds(args.action, args.file, args.out)

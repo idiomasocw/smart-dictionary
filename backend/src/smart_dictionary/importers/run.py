@@ -7,6 +7,7 @@ from pathlib import Path
 
 import psycopg
 
+from smart_dictionary.core.text import norm
 from smart_dictionary.importers import db, kaikki, sources
 from smart_dictionary.importers.fetch import fetch, sha256_of
 from smart_dictionary.importers.manifest import Dataset
@@ -100,10 +101,18 @@ def _keep_word(
     }
     if not frequent:
         raise RuntimeError("import wordfreq-en before kaikki-en: the filter needs frequencies")
-    lists = conn.execute("select lemma, lemma_norm from ref_lists").fetchall()
-    listed = {lemma_norm for _, lemma_norm in lists}
+    # Listed means on an open list or a seed candidate, with its variants: the owner's lists
+    # override every filter, and a US headword needs its UK spelling's entry (catalogue).
+    lists = conn.execute(
+        "select lemma, lemma_norm from ref_lists"
+        " union all select lemma, lemma_norm from seed_candidates"
+    ).fetchall()
+    variants = conn.execute(
+        "select v->>'form' from seed_candidates, jsonb_array_elements(variants) v"
+    ).fetchall()
+    listed = {lemma_norm for _, lemma_norm in lists} | {norm(form) for (form,) in variants}
     # Proper nouns need a list's exact spelling: "April", but not the town "Accident".
-    listed_spellings = {lemma for lemma, _ in lists}
+    listed_spellings = {lemma for lemma, _ in lists} | {form for (form,) in variants}
 
     from wordfreq import zipf_frequency
 
