@@ -188,8 +188,16 @@ SKIPPED = [
 ]
 
 
-def keep_dictionary_only(word_norm: str, multiword: bool) -> bool:
-    return word_norm == "dictionary"
+def keep_listed(*spellings: str) -> kaikki.KeepWord:
+    """A keep filter whose lists hold exactly these headwords."""
+
+    def keep(word: str, word_norm: str, candidate: kaikki.Candidate) -> bool:
+        return (word if candidate == "name" else word_norm) in spellings
+
+    return keep
+
+
+keep_dictionary_only = keep_listed("dictionary")
 
 
 def test_kaikki_extract_keeps_known_words_and_every_multiword_kind():
@@ -207,6 +215,93 @@ def test_kaikki_extract_keeps_known_words_and_every_multiword_kind():
     assert give_up is not None and give_up["kind"] == "phrasal_verb"
     assert ice is not None and ice["kind"] == "idiom"
     assert [kaikki.extract(e, keep_dictionary_only) for e in SKIPPED] == [None] * len(SKIPPED)
+
+
+APRIL = _entry("April", "name", [{"glosses": ["The fourth month."]}])
+AGO = _entry("ago", "postp", [{"glosses": ["Before now."]}])
+CATALOG = _entry(
+    "catalog",
+    "noun",
+    [
+        {
+            "glosses": ["US standard spelling of catalogue."],
+            "tags": ["US", "alt-of"],
+            "alt_of": [{"word": "catalogue"}],
+        }
+    ],
+    forms=[{"form": "catalogs", "tags": ["plural"]}],
+)
+GDP = _entry(
+    "GDP",
+    "noun",
+    [
+        {
+            "glosses": ["Initialism of gross domestic product."],
+            "tags": ["abbreviation", "alt-of", "initialism"],
+            "alt_of": [{"word": "gross domestic product"}],
+        }
+    ],
+)
+FREE_AS_THREE = _entry(
+    "free",
+    "num",
+    [
+        {
+            "glosses": ["Pronunciation spelling of three."],
+            "tags": ["alt-of", "pronunciation-spelling"],
+            "alt_of": [{"word": "three"}],
+        }
+    ],
+)
+FORTH = _entry("forth", "adv", [{"glosses": ["Forward."], "tags": ["archaic"]}])
+
+
+def _alternative(word: str, pos: str, target: str, *tags: str, **sense: Any) -> dict[str, Any]:
+    alternative = {
+        "glosses": [f"Alternative form of {target}."],
+        "tags": ["alt-of", "alternative", *tags],
+        "alt_of": [{"word": target}],
+        **sense,
+    }
+    return _entry(word, pos, [alternative])
+
+
+def test_kaikki_extract_listed_names_postpositions_variants_and_archaic_words():
+    keep = keep_listed(
+        "April", "ago", "catalog", "forth", "free", "gdp", "okay", "ok", "with", "is", "us"
+    )
+    april = kaikki.extract(APRIL, keep)
+    assert april is not None and (april["pos"], april["pos_raw"]) == ("noun", "name")
+    assert kaikki.extract(APRIL, keep_listed("april")) is None  # names need the listed spelling
+    ago = kaikki.extract(AGO, keep)
+    assert ago is not None and ago["pos"] == "adverb"
+
+    catalog = kaikki.extract(CATALOG, keep)
+    assert catalog is not None
+    assert catalog["variant_of"] == ["catalogue"] and catalog["glosses"] == []
+    assert catalog["forms"] == ["catalogs"] and catalog["tags"] == ["US"]
+    # A plain alternative form counts only when its target is kept too ("withe" isn't), and
+    # register or dialect tags rule a sense out.
+    okay = kaikki.extract(_alternative("okay", "adj", "OK"), keep)
+    assert okay is not None and okay["variant_of"] == ["ok"]
+    assert kaikki.extract(_alternative("with", "noun", "withe"), keep) is None
+    assert kaikki.extract(_alternative("is", "pron", "us", "Geordie"), keep) is None
+    # A target that describes rather than spells is a parsing artifact.
+    description = "miss when used as a term of address"
+    assert kaikki.extract(_alternative("miss", "noun", description), keep_listed("miss")) is None
+    # An idiom's variant is an idiom too, and its target may run longer than one word.
+    idioms = [{"name": "English idioms"}]
+    bush = _alternative("beat about the bush", "verb", "beat around the bush", categories=idioms)
+    idiom = kaikki.extract(bush, keep_listed("beat around the bush"))
+    assert idiom is not None and idiom["kind"] == "idiom"
+    assert idiom["variant_of"] == ["beat around the bush"]
+    # Abbreviations and pronunciation spellings point elsewhere too, but aren't variants.
+    assert kaikki.extract(GDP, keep) is None
+    assert kaikki.extract(FREE_AS_THREE, keep) is None
+
+    # Wiktionary marks every sense of "forth" archaic; being on a list keeps it anyway.
+    assert kaikki.extract(FORTH, keep) is not None
+    assert kaikki.extract(FORTH, keep_dictionary_only) is None
 
 
 def test_manifest_lists_known_importers_in_dependency_order():
@@ -237,7 +332,8 @@ def test_imports_load_the_reference_tables(migrated_database_url, tmp_path: Path
     cefr = tmp_path / "cefr.csv"
     # "dictionary" ranks below wordfreq's top 5,000, so listing it is what keeps its entry.
     cefr.write_text(
-        "headword,pos,CEFR\nabandon,verb,B1\nbus stop,noun,A2\ndictionary,noun,A2\n",
+        "headword,pos,CEFR\nabandon,verb,B1\nbus stop,noun,A2\ndictionary,noun,A2\n"
+        "catalog,noun,B1\n",
         encoding="utf-8",
     )
     unimorph = tmp_path / "eng"
@@ -248,7 +344,7 @@ def test_imports_load_the_reference_tables(migrated_database_url, tmp_path: Path
     brit.write_text("STREET, s t r ˈiː t\n", encoding="utf-8")
     wiktionary = tmp_path / "kaikki.jsonl.gz"
     with gzip.open(wiktionary, "wt", encoding="utf-8") as handle:
-        for entry in (DICTIONARY, RUN_INTO, BREAK_THE_ICE, *SKIPPED):
+        for entry in (DICTIONARY, RUN_INTO, BREAK_THE_ICE, CATALOG, *SKIPPED):
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     counts = {
@@ -261,17 +357,26 @@ def test_imports_load_the_reference_tables(migrated_database_url, tmp_path: Path
             _dataset("t-wiki", "kaikki", min_zipf=3.0, min_multiword_zipf=2.5), path=wiktionary
         ),
     }
-    assert counts["t-cefr"] == 3 and counts["t-forms"] == 1 and counts["t-wiki"] == 3
+    assert counts["t-cefr"] == 4 and counts["t-forms"] == 1 and counts["t-wiki"] == 4
     assert counts["t-freq"] > 4000
 
     # A second import replaces the rows instead of duplicating them.
-    assert import_dataset(_dataset("t-cefr", "cefr_list"), path=cefr) == 3
+    assert import_dataset(_dataset("t-cefr", "cefr_list"), path=cefr) == 4
 
     with connect() as conn:
-        assert _scalar(conn, "select count(*) from ref_lists") == 3
-        assert _scalar(conn, "select row_count from ref_datasets where id = 't-wiki'") == 3
+        assert _scalar(conn, "select count(*) from ref_lists") == 4
+        assert _scalar(conn, "select row_count from ref_datasets where id = 't-wiki'") == 4
         kinds = dict(conn.execute("select word, kind from ref_wiktionary").fetchall())
-        assert kinds == {"dictionary": "word", "run into": "phrasal_verb", "break the ice": "idiom"}
+        assert kinds == {
+            "dictionary": "word",
+            "run into": "phrasal_verb",
+            "break the ice": "idiom",
+            "catalog": "word",
+        }
+        variants = conn.execute(
+            "select word, variant_of from ref_wiktionary where variant_of <> '{}'"
+        ).fetchall()
+        assert variants == [("catalog", ["catalogue"])]
         ipa = conn.execute("select variety, ipa from ref_ipa order by variety").fetchall()
         assert ipa == [("en-GB", "ˈstriːt"), ("en-US", "ˈstrit")]
 

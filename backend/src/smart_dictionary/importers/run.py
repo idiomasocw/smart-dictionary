@@ -100,14 +100,24 @@ def _keep_word(
     }
     if not frequent:
         raise RuntimeError("import wordfreq-en before kaikki-en: the filter needs frequencies")
-    known = frequent | {lemma for (lemma,) in conn.execute("select lemma_norm from ref_lists")}
+    lists = conn.execute("select lemma, lemma_norm from ref_lists").fetchall()
+    listed = {lemma_norm for _, lemma_norm in lists}
+    # Proper nouns need a list's exact spelling: "April", but not the town "Accident".
+    listed_spellings = {lemma for lemma, _ in lists}
 
     from wordfreq import zipf_frequency
 
-    def keep(word_norm: str, multiword: bool) -> bool:
-        if word_norm in known:
+    def keep(word: str, word_norm: str, candidate: kaikki.Candidate) -> bool:
+        if candidate == "name":
+            return word in listed_spellings
+        if word_norm in listed:
             return True
-        return multiword and zipf_frequency(word_norm, "en") >= min_multiword_zipf
+        # Words whose senses are all obsolete or archaic stay only when a list includes them.
+        if candidate == "archaic":
+            return False
+        if word_norm in frequent:
+            return True
+        return candidate == "multiword" and zipf_frequency(word_norm, "en") >= min_multiword_zipf
 
     return keep
 

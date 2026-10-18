@@ -24,7 +24,7 @@ uv run smart-dictionary data import --all
 | `unimorph-eng`, `unimorph-spa` | UniMorph | CC BY-SA 3.0 | Inflected forms; Spanish lexicon check |
 | `cmudict` | CMU Pronouncing Dictionary | BSD-2-Clause-style | Reference US pronunciations (IPA check) |
 | `britfone` | Britfone 3.0.1 (Jose Llarena) | MIT | Reference UK pronunciations (IPA check) |
-| `kaikki-en` | Wiktionary via kaikki.org / wiktextract | CC BY-SA 4.0 and GFDL | Sense hints, translation candidates, phrasal-verb and idiom inventory |
+| `kaikki-en` | Wiktionary via kaikki.org / wiktextract | CC BY-SA 4.0 and GFDL | Sense hints, translation candidates, phrasal-verb and idiom inventory, US and UK spelling variants |
 
 ## Share-alike data
 

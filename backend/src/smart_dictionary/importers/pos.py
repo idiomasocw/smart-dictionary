@@ -29,6 +29,10 @@ WIKTEXTRACT_POS = {
     "conj": "conjunction",
     "intj": "interjection",
     "num": "numeral",
+    # Proper nouns, kept only when a list has the exact spelling (April, Monday).
+    "name": "noun",
+    # Wiktionary's English postpositions: ago, apart, notwithstanding.
+    "postp": "adverb",
     "phrase": "phrase",
     "prep_phrase": "phrase",
     "proverb": "phrase",

@@ -353,7 +353,7 @@ create index llm_calls_time on llm_calls (created_at);
 - **UUIDv7:** the hosted project runs PostgreSQL 17, so IDs are generated in the app (`core/ids.py`), with `gen_random_uuid()` defaults as a safety net.
 - **API-role lockdown:** the migration revokes Supabase's default grants to `anon` and `authenticated`, even though the Data API is off.
 
-**Reference data:** `smart-dictionary data fetch` and `data import` load the open datasets listed in `data/datasets.toml` into read-only `ref_*` tables. Revision `0002_reference_tables.py` is authoritative for their columns.
+**Reference data:** `smart-dictionary data fetch` and `data import` load the open datasets listed in `data/datasets.toml` into read-only `ref_*` tables. Revisions `0002_reference_tables.py` and `0003_wiktionary_variants.py` are authoritative for their columns.
 
 | Table | Contents |
 |---|---|
@@ -362,7 +362,7 @@ create index llm_calls_time on llm_calls (created_at);
 | `ref_freq` | wordfreq Zipf values: English for ranking, Spanish as a lexicon check |
 | `ref_forms` | UniMorph lemma–form pairs, English and Spanish |
 | `ref_ipa` | CMUdict (en-US) and Britfone (en-GB), converted to IPA |
-| `ref_wiktionary` | kaikki.org Wiktionary facts for frequent or listed words and frequent multiword entries (thresholds in `datasets.toml`): kind, POS, IPA, forms, tags and translation candidates. `glosses` is CC BY-SA text: it feeds sense hints and the overlap check and is never served |
+| `ref_wiktionary` | kaikki.org Wiktionary facts for frequent or listed words, frequent multiword entries (thresholds in `datasets.toml`) and proper nouns whose exact spelling is listed (April, Monday): kind, POS, IPA, forms, tags and translation candidates. US spellings and alternative forms that Wiktionary files as pointers (catalog, okay) keep their own IPA and forms, and `variant_of` names the main spelling. It's recorded per entry, so a word is a variant only where its entries for that part of speech have no glosses of their own. `glosses` is CC BY-SA text: it feeds sense hints and the overlap check and is never served |
 
 Every row points at its dataset, and `ref_datasets` also feeds the attribution page. LemmInflect needs no table: it inflects headwords when an entry is published (`entry_forms`).
 
@@ -608,8 +608,15 @@ You asked whether there's a better way to reach 20k than your own lists. My answ
 **Inputs.**
 - Your lists go in `data/seeds/owner/`, in any of three formats:
   - TXT: one item per line;
-  - CSV: `lemma[,pos][,kind][,level][,tags]`;
+  - CSV: `lemma[,pos][,kind][,level][,tags]`, optionally followed by `variants`, `patterns`, `sources`, `original` and `flags` (multiple values separated by ` | `);
   - XLSX: same columns as the CSV.
+
+  `scripts/normalize_owner_lists.py` turns the raw lists in `dictionary-entries/` into `data/seeds/owner/owner-seeds.csv`. Its rules:
+  - **Characters.** Apostrophes are stored as ASCII `'`.
+  - **Citation form.** No infinitive `to`. No leading `be` unless only one word would remain (*be into*).
+  - **Optional parts become variants of one entry.** *(sitting) on top of the world* is `on top of the world` with the variant `sitting on top of the world`, never two entries.
+  - **Complements become patterns.** *(with someone)* goes to `patterns`.
+  - **Placeholders are spelled out** (someone, something, one's). A trailing one is dropped from the lemma, as in *run into*.
 - The open lists:
   - CEFR-J 1.6 (7,801 A1–B2 lemma+POS rows);
   - Octanove C1/C2;
