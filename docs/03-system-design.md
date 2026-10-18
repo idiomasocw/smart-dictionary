@@ -342,14 +342,16 @@ create table llm_calls (
 create index llm_calls_time on llm_calls (created_at);
 ```
 
-**Amendments from `05-integration-and-hosting.md`** (folded into the Phase 1 migrations):
+**Amendments**, implemented in `backend/migrations/versions/0001_core_schema.py` (that file is authoritative where it differs from the sketch above):
 - **Tenancy (05 §7):**
-  - add `tenants (id text primary key, name text not null)`, seeded with `('ocw', 'OneCulture World')`;
-  - add `tenant_id text not null references tenants(id)` to `users`, `lookups`, `saved_items`, `review_cards`, `review_logs`, `pushes`, `content_flags`, `reports`, `misses` and `llm_calls`;
-  - `users` becomes `unique (tenant_id, external_id)`.
-- **API clients:** `api_tokens` becomes `api_clients (id, tenant_id, name, scopes text[], token_hash, rate_limit_per_min, created_at, revoked_at)`, with scopes `factory`, `admin`, `lms` and, later, `app`.
-- **Learner profile cache:** `users` gains `native_language`, `native_region`, `cefr_level`, `role`, `is_active` and `profile_synced_at`, filled by the lms-adapter (05 §6.2 L1).
-- **UUIDv7:** if the Supabase project runs PostgreSQL 17, IDs are generated in the app (UUIDv7 via `uuid-utils`) instead of `default uuidv7()`. Nothing else in the DDL needs PG 18.
+  - `tenants (id text primary key, name text not null)`, seeded with `('ocw', 'OneCulture World')`;
+  - `tenant_id text not null references tenants(id)` on `users`, `lookups`, `saved_items`, `review_cards`, `review_logs`, `pushes`, `content_flags`, `reports` and `misses`. On `llm_calls` it's nullable, because factory and system calls have no tenant;
+  - `users` is `unique (tenant_id, external_id)`.
+- **API clients:** `api_tokens` became `api_clients (id, tenant_id, name, scopes text[], token_hash, rate_limit_per_min, created_at, revoked_at)`, with scopes `factory`, `admin`, `lms` and, later, `app`.
+- **Learner profile:** `users` holds `native_language`, `native_region`, `level`, `role`, `is_active` and `profile_synced_at`, synced by the lms-adapter (05 §6.2 L1). `variety` is the student's own choice; when it's null, the variety is derived from native language and region. The separate `l1` column was dropped.
+- **Phonetic matching:** `entry_forms.phonetic` holds a Double Metaphone key computed by the app, instead of an index on `dmetaphone()`.
+- **UUIDv7:** the hosted project runs PostgreSQL 17, so IDs are generated in the app (`core/ids.py`), with `gen_random_uuid()` defaults as a safety net.
+- **API-role lockdown:** the migration revokes Supabase's default grants to `anon` and `authenticated`, even though the Data API is off.
 
 **Reference data:** the importers in `data/` load the open datasets into read-only `ref_*` tables. Their exact columns get defined in Phase 1.
 
