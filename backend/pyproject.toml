@@ -13,6 +13,7 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "alembic>=1.14",
     "uuid-utils>=0.9",
+    "lemminflect>=0.2.3",
 ]
 
 [project.scripts]
@@ -26,6 +27,13 @@ dev = [
     "pyright>=1.1.390",
     "httpx2>=2.13.1",
 ]
+# Only the dataset importers need these; the API image leaves them out.
+data = [
+    "wordfreq>=3.1",
+]
+
+[tool.uv]
+default-groups = ["dev", "data"]
 
 [build-system]
 requires = ["hatchling"]
@@ -52,6 +60,9 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 "migrations/versions/*.py" = ["E501"]
 # Normalization tests feed curly quotes, Arabic and full-width text on purpose.
 "tests/**" = ["RUF001"]
+# IPA symbols (ɑ, ʊ, ʃ…) are the data here, not look-alike typos.
+"src/smart_dictionary/importers/phonetics.py" = ["RUF001", "RUF002"]
+"src/smart_dictionary/importers/sources.py" = ["RUF002"]
 
 [tool.pyright]
 include = ["src", "tests"]

@@ -1,0 +1,96 @@
+# Open datasets that ground and check the content factory (docs/03 §6.1–6.2).
+#
+#   uv run smart-dictionary data fetch <id>     download into data/raw/<id>/ (sha256-checked when pinned)
+#   uv run smart-dictionary data import <id>    load the ref_* tables
+#   uv run smart-dictionary data import --all   everything, in dependency order
+#
+# GitHub URLs are pinned to a commit so a re-import gets the same bytes. Licenses and
+# attribution are listed in data/README.md and copied into ref_datasets on import.
+
+[cefrj]
+name = "CEFR-J Vocabulary Profile"
+version = "1.5"
+license = "Free for research and commercial use, with citation"
+attribution = "CEFR-J Wordlist Version 1.5, compiled by Yukio Tono, Tokyo University of Foreign Studies; distributed via Open Language Profiles."
+url = "https://raw.githubusercontent.com/openlanguageprofiles/olp-en-cefrj/d4e45b75b38f27b30dfc5c44d8c571aec7e7092f/cefrj-vocabulary-profile-1.5.csv"
+sha256 = "b0dd3c635f1c9a4fdf1490c7e5b7c48e8bbe55b652ad0c9860a95f98e10ae498"
+importer = "cefr_list"
+
+[octanove-c1c2]
+name = "Octanove Vocabulary Profile C1/C2"
+version = "1.0"
+license = "CC BY-SA 4.0"
+attribution = "Octanove Vocabulary Profile C1/C2 1.0, Octanove Labs; distributed via Open Language Profiles."
+url = "https://raw.githubusercontent.com/openlanguageprofiles/olp-en-cefrj/d4e45b75b38f27b30dfc5c44d8c571aec7e7092f/octanove-vocabulary-profile-c1c2-1.0.csv"
+sha256 = "18c33a407f2f89f7b8de9671c6d45fe3ea0bce45e7d2d7dcaab48d73e0f7b380"
+importer = "cefr_list"
+
+[wordfreq-en]
+name = "wordfreq word frequencies (English)"
+version = "package"
+license = "Apache-2.0 (code); CC BY-SA 4.0 (data)"
+attribution = "wordfreq by Robyn Speer, built from SUBTLEX, Wikipedia, OpenSubtitles, Google Books and other sources."
+url = "https://pypi.org/project/wordfreq/"
+importer = "wordfreq"
+language = "en"
+top_n = 60000
+
+[wordfreq-es]
+name = "wordfreq word frequencies (Spanish)"
+version = "package"
+license = "Apache-2.0 (code); CC BY-SA 4.0 (data)"
+attribution = "wordfreq by Robyn Speer, built from SUBTLEX, Wikipedia, OpenSubtitles, Google Books and other sources."
+url = "https://pypi.org/project/wordfreq/"
+importer = "wordfreq"
+language = "es"
+top_n = 80000
+
+[unimorph-eng]
+name = "UniMorph English"
+version = "66e0e9e"
+license = "CC BY-SA 3.0"
+attribution = "UniMorph English inflection tables (unimorph.github.io)."
+url = "https://raw.githubusercontent.com/unimorph/eng/66e0e9e8e2dcd196da081a25a48e5c1fe3d8b49b/eng"
+sha256 = "20a191cefdc7cad6fa74b00f49d6f658684f17b14541aae372e5a3d5a8c15c67"
+importer = "unimorph"
+language = "en"
+
+[unimorph-spa]
+name = "UniMorph Spanish"
+version = "b9655ef"
+license = "CC BY-SA 3.0"
+attribution = "UniMorph Spanish inflection tables (unimorph.github.io)."
+url = "https://raw.githubusercontent.com/unimorph/spa/b9655efb0e5ce0f99809badaa7f4e93017ab8430/spa"
+sha256 = "7a165d4b44eb078d23964f3eee3813f5140c5df0ffab0143c806c562e67f8771"
+importer = "unimorph"
+language = "es"
+
+[cmudict]
+name = "CMU Pronouncing Dictionary"
+version = "7479086"
+license = "BSD-2-Clause-style (Carnegie Mellon University)"
+attribution = "The CMU Pronouncing Dictionary, Carnegie Mellon University."
+url = "https://raw.githubusercontent.com/cmusphinx/cmudict/74790861f652b15e4ac49015a90074ad62a27690/cmudict.dict"
+sha256 = "81917843c7f44ce2b094ac63873c2c7a4cf802040792c455ba3ca406891c3d22"
+importer = "cmudict"
+
+[britfone]
+name = "Britfone"
+version = "3.0.1"
+license = "MIT"
+attribution = "Britfone 3.0.1 by Jose Llarena."
+url = "https://raw.githubusercontent.com/JoseLlarena/Britfone/1062be14adc96c358f2087ac5449d72130c7a6f4/britfone.main.3.0.1.csv"
+sha256 = "59f197e98520856d1cc88e380beb54e4314d8712efc4d588b6778819c502d920"
+importer = "britfone"
+
+[kaikki-en]
+name = "Wiktionary English (kaikki.org wiktextract extract)"
+version = "2026-10-03"
+license = "CC BY-SA 4.0 and GFDL (Wiktionary); facts and internal hints only"
+attribution = "Wiktionary contributors, extracted by kaikki.org / wiktextract (Tatu Ylonen)."
+url = "https://kaikki.org/dictionary/English/kaikki.org-dictionary-English.jsonl.gz"
+importer = "kaikki"
+# kaikki republishes this file monthly at the same URL, so it isn't sha-pinned here;
+# the sha256 of the bytes actually imported is recorded in ref_datasets.
+min_zipf = 3.0
+min_multiword_zipf = 2.5

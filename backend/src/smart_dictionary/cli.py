@@ -1,14 +1,12 @@
-"""Command-line entry point: `smart-dictionary api | migrate | schema export`.
+"""Command-line entry point: `smart-dictionary api | migrate | schema | data`.
 
-The container image runs these same commands; `worker` joins them with the job queue.
+The container image runs api and migrate; `worker` joins them with the job queue.
 """
 
 import argparse
 import sys
-from pathlib import Path
 
-BACKEND_DIR = Path(__file__).resolve().parents[2]
-SCHEMA_PATH = BACKEND_DIR.parent / "factory" / "schema" / "entry.v1.json"
+from smart_dictionary.paths import BACKEND_DIR, SCHEMA_PATH
 
 
 def alembic_config():
@@ -60,6 +58,43 @@ def _schema_export(check: bool) -> None:
     print(f"wrote {SCHEMA_PATH}")
 
 
+def _data(action: str, ids: list[str], every: bool, force: bool) -> None:
+    from smart_dictionary.core.logging import configure_logging
+    from smart_dictionary.importers.fetch import fetch
+    from smart_dictionary.importers.manifest import load_manifest
+    from smart_dictionary.importers.run import import_dataset, in_import_order
+
+    configure_logging("INFO")
+    manifest = load_manifest()
+    if action == "list":
+        for dataset in manifest.values():
+            print(f"{dataset.id:<15} {dataset.importer:<10} {dataset.license}")
+        return
+    unknown = sorted(set(ids) - manifest.keys())
+    if unknown or not (ids or every):
+        known = ", ".join(manifest)
+        raise SystemExit(
+            f"name datasets or pass --all (unknown: {unknown or 'none'}; known: {known})"
+        )
+    chosen = in_import_order(manifest.values() if every else (manifest[i] for i in ids))
+    for dataset in chosen:
+        if action == "fetch":
+            path = fetch(dataset, force=force)
+            print(f"{dataset.id}: {path or 'installed package, nothing to download'}")
+        else:
+            print(f"{dataset.id}: {import_dataset(dataset)} rows")
+
+
+def _fixtures_load() -> None:
+    from smart_dictionary.content.publish import load_fixtures
+    from smart_dictionary.db.sync import connect
+    from smart_dictionary.paths import FIXTURES_DIR
+
+    with connect() as conn:
+        keys = load_fixtures(conn, FIXTURES_DIR / "entries")
+    print(f"published {len(keys)} fixture entries")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="smart-dictionary")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -76,6 +111,15 @@ def main(argv: list[str] | None = None) -> None:
     schema.add_argument("action", choices=["export"])
     schema.add_argument("--check", action="store_true", help="fail if the file is out of date")
 
+    data = commands.add_parser("data", help="open datasets: list, fetch or import (ref_* tables)")
+    data.add_argument("action", choices=["list", "fetch", "import"])
+    data.add_argument("ids", nargs="*", help="dataset ids from data/datasets.toml")
+    data.add_argument("--all", action="store_true", dest="every", help="every dataset, in order")
+    data.add_argument("--force", action="store_true", help="download again even if present")
+
+    fixtures = commands.add_parser("fixtures", help="development entries (backend/fixtures)")
+    fixtures.add_argument("action", choices=["load"])
+
     args = parser.parse_args(argv)
     if args.command == "api":
         _api(args.host, args.port, args.reload)
@@ -83,3 +127,7 @@ def main(argv: list[str] | None = None) -> None:
         _migrate(args.revision)
     elif args.command == "schema":
         _schema_export(args.check)
+    elif args.command == "data":
+        _data(args.action, args.ids, args.every, args.force)
+    elif args.command == "fixtures":
+        _fixtures_load()

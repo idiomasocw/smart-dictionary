@@ -1,51 +1,17 @@
-"""Apply every migration to a throwaway database, check the schema, then roll back.
+"""Apply every migration to a throwaway database, check the schema, then roll back."""
 
-Skips itself when no database is reachable (e.g. the local stack is stopped).
-"""
-
-import os
-import uuid
-from collections.abc import Iterator
-
-import pytest
 from alembic import command
-from sqlalchemy import Engine, create_engine, text
-from sqlalchemy.engine import make_url
+from sqlalchemy import create_engine, text
 
 from smart_dictionary.cli import alembic_config
-from smart_dictionary.core.settings import get_settings
 
 EXPECTED_TABLES = {
     "tenants", "languages", "varieties", "entries", "entry_revisions", "entry_forms",
     "expression_patterns", "senses", "equivalents", "l1_forms", "sense_links", "audio_assets",
     "users", "lookups", "saved_items", "review_cards", "review_logs", "pushes", "content_flags",
     "reports", "misses", "seed_candidates", "factory_batches", "api_clients", "ai_cache",
-    "llm_calls",
+    "llm_calls", "ref_datasets", "ref_lists", "ref_freq", "ref_forms", "ref_ipa", "ref_wiktionary",
 }  # fmt: skip
-
-
-def _admin_engine() -> Engine:
-    url = make_url(os.environ["DATABASE_URL"])
-    return create_engine(url, isolation_level="AUTOCOMMIT", connect_args={"connect_timeout": 3})
-
-
-@pytest.fixture
-def scratch_database_url(live_database, monkeypatch) -> Iterator[str]:
-    admin = _admin_engine()
-    name = f"sd_test_{uuid.uuid4().hex[:10]}"
-    with admin.connect() as connection:
-        connection.execute(text(f'create database "{name}"'))
-    url = make_url(os.environ["DATABASE_URL"]).set(database=name)
-    rendered = url.render_as_string(hide_password=False)
-    monkeypatch.setenv("DATABASE_URL", rendered)
-    get_settings.cache_clear()
-    try:
-        yield rendered
-    finally:
-        get_settings.cache_clear()
-        with admin.connect() as connection:
-            connection.execute(text(f'drop database "{name}" with (force)'))
-        admin.dispose()
 
 
 def _public_tables(database_url: str) -> set[str]:
