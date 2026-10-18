@@ -1,17 +1,24 @@
 # Smart Dictionary backend
 
-Python 3.13 package `smart_dictionary`: the REST API (FastAPI), the database migrations (Alembic) and, in later phases, the content pipeline and workers. The design lives in [`../docs/03-system-design.md`](../docs/03-system-design.md).
+Python 3.13 package `smart_dictionary`: the REST API (FastAPI), the database migrations (Alembic), the open-dataset importers and, in later phases, the content pipeline and workers. The design lives in [`../docs/03-system-design.md`](../docs/03-system-design.md).
 
 ## Local setup
 
 ```bash
-supabase start                     # from the repo root: Postgres on 127.0.0.1:34322, Studio on :34323
+supabase start                             # from the repo root: Postgres on 127.0.0.1:34322, Studio on :34323
 cd backend
 cp .env.example .env
 uv sync
-uv run smart-dictionary migrate    # alembic upgrade head
-uv run smart-dictionary api        # http://127.0.0.1:8000/healthz
+uv run smart-dictionary migrate            # alembic upgrade head
+uv run smart-dictionary data fetch --all   # open datasets into ../data/raw/ (about 0.6 GB)
+uv run smart-dictionary data import --all  # load them into the ref_* tables
+uv run smart-dictionary fixtures load      # publish the hand-written entries in fixtures/
+uv run smart-dictionary api                # http://127.0.0.1:8000/healthz
 ```
+
+`smart-dictionary data list` shows the datasets in `../data/datasets.toml`; `data fetch` and `data import` also take dataset ids instead of `--all`.
+
+The read API (`/v1/lookup`, `/v1/suggest`, `/v1/entries/{key}`) is specified in design §5, and outside production its interactive docs are at `/docs`. Errors are `application/problem+json`. When `BBB_PROXY_SECRET` is set, every `/v1` request needs the proxy's `X-Dict-Secret` header.
 
 ## Checks
 
@@ -26,9 +33,13 @@ uv run pyright
 
 | Path | Contents |
 |---|---|
-| `src/smart_dictionary/core/` | Settings, logging, IDs, and later text normalization, keys and the EntryDoc models |
-| `src/smart_dictionary/db/` | SQLAlchemy engine and sessions |
-| `src/smart_dictionary/api/` | FastAPI app factory and routes |
-| `src/smart_dictionary/cli.py` | `smart-dictionary api \| migrate`; `worker` arrives with the job queue |
+| `src/smart_dictionary/core/` | Settings, logging, IDs, text normalization, content keys, the EntryDoc models and the request `Principal` |
+| `src/smart_dictionary/db/` | The async SQLAlchemy engine for the API, and a plain psycopg connection for importers and publishing |
+| `src/smart_dictionary/api/` | FastAPI app factory, authentication, problem+json errors and routes |
+| `src/smart_dictionary/search/` | Lookup and autocomplete: the SQL generators and their ranking |
+| `src/smart_dictionary/content/` | Publishing entry documents, their search projections and the student's entry card |
+| `src/smart_dictionary/importers/` | Fetchers and parsers that load the open datasets into the `ref_*` tables |
+| `src/smart_dictionary/cli.py` | `smart-dictionary api \| migrate \| schema \| data \| fixtures`; `worker` arrives with the job queue |
+| `fixtures/` | Hand-written development entries (EntryDoc JSON), also used by the tests |
 | `migrations/` | Alembic revisions, written as plain SQL; no autogenerate |
-| `tests/` | pytest; database tests skip themselves when no database is reachable |
+| `tests/` | pytest; database tests run on throwaway databases and skip themselves when no database is reachable |

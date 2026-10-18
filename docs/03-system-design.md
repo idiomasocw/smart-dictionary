@@ -353,18 +353,18 @@ create index llm_calls_time on llm_calls (created_at);
 - **UUIDv7:** the hosted project runs PostgreSQL 17, so IDs are generated in the app (`core/ids.py`), with `gen_random_uuid()` defaults as a safety net.
 - **API-role lockdown:** the migration revokes Supabase's default grants to `anon` and `authenticated`, even though the Data API is off.
 
-**Reference data:** the importers in `data/` load the open datasets into read-only `ref_*` tables. Their exact columns get defined in Phase 1.
+**Reference data:** `smart-dictionary data fetch` and `data import` load the open datasets listed in `data/datasets.toml` into read-only `ref_*` tables. Revision `0002_reference_tables.py` is authoritative for their columns.
 
 | Table | Contents |
 |---|---|
-| `ref_forms_en` | UniMorph + LemmInflect forms |
-| `ref_ipa` | CMUdict + Britfone |
-| `ref_wiktionary_hints` | Short sense hints and ES translation candidates, for candidate lemmas only |
-| `ref_lexicon_es` | wordfreq es + UniMorph es |
-| `ref_freq` | wordfreq Zipf |
-| `ref_lists` | CEFR-J, Octanove, NGSL memberships and levels |
+| `ref_datasets` | One row per dataset: version, license, attribution, source URL, checksum and row count |
+| `ref_lists` | Headword lists with levels or ranks: CEFR-J and Octanove C1/C2 now; NGSL and the owner's lists later |
+| `ref_freq` | wordfreq Zipf values: English for ranking, Spanish as a lexicon check |
+| `ref_forms` | UniMorph lemma–form pairs, English and Spanish |
+| `ref_ipa` | CMUdict (en-US) and Britfone (en-GB), converted to IPA |
+| `ref_wiktionary` | kaikki.org Wiktionary facts for frequent or listed words and frequent multiword entries (thresholds in `datasets.toml`): kind, POS, IPA, forms, tags and translation candidates. `glosses` is CC BY-SA text: it feeds sense hints and the overlap check and is never served |
 
-Each table records the dataset version and license, which also feeds the attribution page.
+Every row points at its dataset, and `ref_datasets` also feeds the attribution page. LemmInflect needs no table: it inflects headwords when an entry is published (`entry_forms`).
 
 **Deferred tables:** `media_sources`, `utterances`, `clips` and `clip_coverage` arrive with the clips phase (sketched in audit §5.3).
 
@@ -526,14 +526,14 @@ Input: the selected text, its sentence (≤ 500 characters) and the selection of
 
 | Context | How | Who |
 |---|---|---|
-| `bbb` | Requests arrive through the BBB nginx proxy carrying `X-Dict-Secret` (constant-time compare) plus `X-BBB-Meeting`, `X-BBB-Ext-User` and `X-BBB-Is-Mod`. Middleware builds a `Principal`; `users` rows are created lazily on first use | Students and teachers |
+| `bbb` | Requests arrive through the BBB nginx proxy carrying `X-Dict-Secret` (constant-time compare) plus `X-BBB-Meeting`, `X-BBB-Ext-User` and `X-BBB-Is-Mod`. A FastAPI dependency builds a `Principal`; `users` rows are created lazily on first use | Students and teachers |
 | `factory` | `Authorization: Bearer <token>`, scope `factory` (hashed in `api_clients`) | The routine |
 | `admin` | Bearer token, scope `admin` | You |
 | `lms` | Bearer token, scope `lms`: server-to-server calls from the LMS (later: `/v1/resolve`, `/v1/demand`) | The LMS backend |
 | `jwt` *(later)* | An OIDC JWT verified against the issuer's JWKS (Cognito for your LMS web and app) | Students outside BBB |
 | `api_key` *(later)* | Per-client keys with scopes, rate limits and metering | External apps |
 
-Every context resolves to `Principal(tenant, subject, roles, via)`, so the business logic never knows which adapter authenticated the request.
+Every context resolves to `Principal(tenant, subject, meeting, roles, via)` (`core/principal.py`), so the business logic never knows which adapter authenticated the request.
 
 Caddy accepts `bbb` traffic only from the BBB server's IP. Factory and admin routes are token-only, because routines have no static egress IP.
 
@@ -564,29 +564,35 @@ Caddy accepts `bbb` traffic only from the BBB server's IP. Factory and admin rou
 | GET | `/v1/admin/stats` | admin | Counts, spend, latency, factory throughput | OP-1 |
 | GET | `/healthz` · `/readyz` | none | Health checks | — |
 
-### 5.3 Example response: `GET /v1/lookup?q=me di cuenta`
+### 5.3 Example response: `GET /v1/lookup?q=darse cuenta`
 
 ```json
 {
-  "query": { "q": "me di cuenta", "norm": "me di cuenta", "direction": "l1", "variety": "es-419" },
+  "query": { "q": "darse cuenta", "norm": "darse cuenta", "direction": "auto", "variety": "es-419" },
   "groups": [
-    { "label": "es→en", "items": [
-      { "entry_key": "en:realize:v", "lemma": "realize", "pos": "verb", "cefr": "B1",
+    { "side": "l1", "items": [
+      { "entry_key": "en:realize:v", "lemma": "realize", "pos": "verb", "kind": "word", "cefr": "B1",
         "sense_key": "en:realize:v#1", "short_gloss": "understand something suddenly",
-        "matched": { "via": "equivalent", "term": "darse cuenta" }, "score": 0.93, "provisional": false },
-      { "entry_key": "en:notice:v", "lemma": "notice", "pos": "verb", "cefr": "B1",
+        "equivalent": "darse cuenta", "matched": { "via": "equivalent", "text": "darse cuenta" },
+        "score": 0.92, "provisional": false },
+      { "entry_key": "en:notice:v", "lemma": "notice", "pos": "verb", "kind": "word", "cefr": "B1",
         "sense_key": "en:notice:v#1", "short_gloss": "see or become aware of",
-        "matched": { "via": "equivalent", "term": "darse cuenta" }, "score": 0.71, "provisional": false }
+        "equivalent": "notar", "matched": { "via": "equivalent", "text": "darse cuenta" },
+        "score": 0.89, "provisional": false }
     ] }
   ],
-  "did_you_mean": [],
-  "provisional": null
+  "did_you_mean": []
 }
 ```
 
+- `side` is `en` when the query matched an English headword or form, and `l1` when it matched an equivalent in the student's language. `dir=auto` searches both sides and lists `en` first.
+- `matched.via` is `exact`, `form` or `equivalent`. `equivalent` is the sense's first equivalent in the student's variety.
+- `did_you_mean` (trigram and phonetic matches) is filled only when no group matched.
+- Inflected input such as *me di cuenta* needs `l1_forms` (§10.2), which publishing doesn't generate yet; until it does, such queries reach these senses through `did_you_mean`. The response gains a top-level `provisional` object with §6.5.
+
 ### 5.4 Conventions
 
-- **Errors:** RFC 9457 `application/problem+json` (`type`, `title`, `status`, `detail`, plus a stable `code` such as `quota_exceeded` or `invalid_query`).
+- **Errors:** RFC 9457 `application/problem+json` (`type`, `title`, `status`, `detail`, `instance`, plus a stable `code` such as `quota_exceeded` or `invalid_query`). The framework's own errors use the same shape, with the codes `invalid_request` (422), `not_found`, `method_not_allowed` and `internal_error`.
 - **Rate limits:** per student, 120 lookups/min, with daily quotas per AI task (§7.1). A per-IP fallback catches anonymous traffic. `429` responses carry `Retry-After`.
 - **Versioning:** `/v1` changes are additive only; breaking changes go to `/v2`. The OpenAPI document is generated by FastAPI and committed, and CI fails if the generated TS client drifts.
 - **Limits:** `q` ≤ 100 characters; `context` ≤ 500 characters; `sentence` ≤ 200 characters. Inputs are trimmed and normalized, and control characters are rejected.

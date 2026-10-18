@@ -7,10 +7,12 @@ An AI-built, L1-aware English learner's dictionary for OneCulture World's BigBlu
 | Path | Contents |
 |---|---|
 | [`docs/`](docs/) | The audit, product spec, system design, roadmap and integration decisions. Start with `02`–`05` |
-| [`backend/`](backend/) | Python 3.13 API and database migrations; workers arrive with the content factory. See [`backend/README.md`](backend/README.md) |
+| [`backend/`](backend/) | Python 3.13 API, database migrations and dataset importers; workers arrive with the content factory. See [`backend/README.md`](backend/README.md) |
+| [`data/`](data/) | The open-dataset manifest (`datasets.toml`) and its licensing notes. Downloads land in `data/raw/`, which git ignores |
+| [`factory/`](factory/) | The content factory's contract: the EntryDoc JSON Schema. The routines arrive in Phase 2 |
 | [`supabase/`](supabase/) | Local Supabase CLI config: database and Studio only, on ports 34320–34329 |
 
-`factory/`, `data/` and `infra/` arrive in Phases 1–2 (content factory, dataset importers, CDK and deploy). The BBB plugin lives in its own repository.
+`infra/` (CDK and deploy) arrives later in Phase 1. The BBB plugin lives in its own repository.
 
 ## Local development
 
@@ -20,6 +22,9 @@ cd backend
 cp .env.example .env
 uv sync
 uv run smart-dictionary migrate
+uv run smart-dictionary data fetch --all    # the open datasets, about 0.6 GB, into data/raw/
+uv run smart-dictionary data import --all   # load them into the ref_* tables
+uv run smart-dictionary fixtures load       # hand-written development entries
 uv run smart-dictionary api
 ```
 

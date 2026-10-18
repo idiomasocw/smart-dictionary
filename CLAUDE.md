@@ -19,6 +19,7 @@ An English learner's dictionary for OneCulture World. Entries are pre-populated 
 - **Content keys** (entries, senses, examples) are stable forever: never reuse or renumber them.
 - **The LMS integrates through HTTP contracts only** (05 §6). Never read LMS tables, and never store student names, emails or phones.
 - **No LLM in the lookup path.** Request-time AI goes through the gateway, with its $5/month cap.
+- **Open datasets are facts only.** `ref_wiktionary.glosses` is CC BY-SA text: use it for internal hints and checks, but never serve it or copy it into entries (`data/README.md`).
 - **Secrets** never go in the repo; `backend/.env` is local only.
 - **Git:** the owner runs every `git add` and `git commit`. Propose the exact commands, grouped into logical commits, and never add Co-Authored-By or other AI attribution lines.
 - **Windows development:** psycopg's async mode needs a selector event loop. The CLI handles it (`core/runtime.py`), and tests that touch the async database use the `anyio_backend_options` fixture.
@@ -32,8 +33,11 @@ uv sync
 uv run pytest
 uv run ruff check . && uv run ruff format --check .
 uv run pyright
-uv run smart-dictionary migrate        # alembic upgrade head
-uv run smart-dictionary api            # http://127.0.0.1:8000
+uv run smart-dictionary migrate            # alembic upgrade head
+uv run smart-dictionary data fetch --all   # open datasets into data/raw/ (gitignored)
+uv run smart-dictionary data import --all  # load them into the ref_* tables
+uv run smart-dictionary fixtures load      # publish the hand-written entries in fixtures/
+uv run smart-dictionary api                # http://127.0.0.1:8000
 ```
 
 The local database runs from the repo root: `supabase start` / `supabase stop`, on ports 34320–34329. The LMS's local stack uses 54320–54329, so never move this project onto those.
