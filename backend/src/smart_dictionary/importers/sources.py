@@ -2,8 +2,9 @@
 
 import csv
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
+from typing import Any
 
 from psycopg.types.json import Jsonb
 
@@ -16,6 +17,8 @@ LIST_COLUMNS = ["dataset_id", "lemma", "lemma_norm", "pos", "pos_raw", "level", 
 FREQ_COLUMNS = ["dataset_id", "language", "word", "zipf"]
 FORM_COLUMNS = ["dataset_id", "language", "lemma", "lemma_norm", "form", "form_norm", "features"]
 IPA_COLUMNS = ["dataset_id", "word", "word_norm", "variety", "ipa", "raw"]
+# Word lists default to UTF-8, with or without a byte-order mark.
+LIST_ENCODING = "utf-8-sig"
 
 _VARIANT_NUMBER = re.compile(r"\(\d+\)$")
 _LIST_CORE_COLUMNS = {"headword", "pos", "CEFR"}
@@ -31,14 +34,7 @@ def cefr_list_rows(path: Path, dataset_id: str) -> Iterator[tuple]:
             pos_raw = (record.get("pos") or "").strip() or None
             level = (record.get("CEFR") or "").strip().upper()
             variants = [part.strip() for part in headword.split("/") if part.strip()]
-            extra = {
-                key: value.strip()
-                for key, value in record.items()
-                if key
-                and key not in _LIST_CORE_COLUMNS
-                and isinstance(value, str)
-                and value.strip()
-            }
+            extra = _other_columns(record, _LIST_CORE_COLUMNS)
             if len(variants) > 1:
                 extra["headword"] = headword
             seen: set[str] = set()
@@ -57,6 +53,70 @@ def cefr_list_rows(path: Path, dataset_id: str) -> Iterator[tuple]:
                     None,
                     Jsonb(extra) if extra else None,
                 )
+
+
+def ranked_list_rows(
+    path: Path,
+    dataset_id: str,
+    *,
+    lemma_column: str,
+    rank_column: str,
+    encoding: str = LIST_ENCODING,
+) -> Iterator[tuple]:
+    """A ranked headword CSV, such as the NGSL family's `*_stats.csv` (Lemma,Rank,SFI,U).
+
+    Each list names its columns differently, so the manifest says which ones hold the
+    lemma and the rank; the other columns (SFI, U, Band) are kept in `extra`.
+    """
+    with path.open(encoding=encoding, newline="") as handle:
+        reader = csv.DictReader(handle)
+        missing = {lemma_column, rank_column} - set(reader.fieldnames or ())
+        if missing:
+            raise ValueError(f"{path.name} has no {', '.join(sorted(missing))} column")
+        for record in reader:
+            lemma = (record.get(lemma_column) or "").strip()
+            key = norm(lemma)
+            if not key:
+                continue
+            rank = (record.get(rank_column) or "").strip()
+            extra = _other_columns(record, {lemma_column, rank_column})
+            yield (
+                dataset_id,
+                lemma,
+                key,
+                None,
+                None,
+                None,
+                int(rank) if rank.isdigit() else None,
+                Jsonb(extra) if extra else None,
+            )
+
+
+def word_family_rows(
+    path: Path, dataset_id: str, *, encoding: str = LIST_ENCODING
+) -> Iterator[tuple]:
+    """Headword-then-forms CSV, such as the NGSL family's `*_lemmatized_for_teaching.csv`.
+
+    Lines starting with `##` are comments. The forms are kept in `extra`.
+    """
+    with path.open(encoding=encoding, newline="") as handle:
+        lines = (line for line in handle if not line.startswith("##"))
+        for fields in csv.reader(lines):
+            words = [field.strip() for field in fields if field.strip()]
+            key = norm(words[0]) if words else ""
+            if not key:
+                continue
+            forms = words[1:]
+            yield (
+                dataset_id,
+                words[0],
+                key,
+                None,
+                None,
+                None,
+                None,
+                Jsonb({"forms": forms}) if forms else None,
+            )
 
 
 def wordfreq_rows(dataset_id: str, language: str, top_n: int) -> Iterator[tuple]:
@@ -118,3 +178,12 @@ def britfone_rows(path: Path, dataset_id: str) -> Iterator[tuple]:
             if not key:
                 continue
             yield (dataset_id, word, key, "en-GB", britfone_to_ipa(phones), phones.strip())
+
+
+def _other_columns(record: Mapping[Any, Any], core: set[str]) -> dict[str, str]:
+    """A CSV record's remaining non-empty columns, kept as given."""
+    return {
+        key: value.strip()
+        for key, value in record.items()
+        if key and key not in core and isinstance(value, str) and value.strip()
+    }

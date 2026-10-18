@@ -25,6 +25,77 @@ url = "https://raw.githubusercontent.com/openlanguageprofiles/olp-en-cefrj/d4e45
 sha256 = "18c33a407f2f89f7b8de9671c6d45fe3ea0bce45e7d2d7dcaab48d73e0f7b380"
 importer = "cefr_list"
 
+# The NGSL family (newgeneralservicelist.com). Its official links always serve the
+# current upload, so the sha256 pin turns a changed file into a failed fetch instead of
+# a silent change. Only headwords, ranks and frequency statistics are imported, never
+# the lists' "easy English" definitions, which are CC BY-SA text.
+
+[ngsl]
+name = "New General Service List (NGSL)"
+version = "1.2"
+license = "CC BY-SA 4.0"
+attribution = "New General Service List 1.2 by Browne, C., Culligan, B., and Phillips, J. (newgeneralservicelist.com), CC BY-SA 4.0."
+url = "https://www.newgeneralservicelist.com/s/NGSL_12_stats.csv"
+sha256 = "2098bab8955a120a9766c6282a51d7d578c6cb0a7d946600d2ffb73ba25a0b44"
+importer = "ranked_list"
+lemma_column = "Lemma"
+rank_column = "SFI Rank"
+
+[ngsl-sup]
+name = "NGSL supplementary words (days, months, numbers)"
+# The site gives the supplement no version number; this is the file's upload date.
+version = "2023-05-13"
+license = "CC BY-SA 4.0"
+attribution = "NGSL supplementary words, part of the New General Service List by Browne, C., Culligan, B., and Phillips, J. (newgeneralservicelist.com), CC BY-SA 4.0."
+url = "https://www.newgeneralservicelist.com/s/SUP_lemmatized.csv"
+sha256 = "7bb4c76cbe43ae87240be4ac7ada370b9e1a0d9d631d8c4430138646965d03f6"
+importer = "word_family"
+
+[ngsl-spoken]
+name = "New General Service List-Spoken (NGSL-S)"
+version = "1.2"
+license = "CC BY-SA 4.0"
+attribution = "New General Service List-Spoken 1.2 by Browne, C. and Culligan, B. (newgeneralservicelist.com), CC BY-SA 4.0."
+url = "https://www.newgeneralservicelist.com/s/NGSL-Spoken_12_stats.csv"
+sha256 = "07708940c50a07cac4f507fd1e87bdd50081d7b87713a66a99beb3c8c4d11ac8"
+importer = "ranked_list"
+lemma_column = "Lemma"
+rank_column = "Rank"
+
+[nawl]
+name = "New Academic Word List (NAWL)"
+version = "1.2"
+license = "CC BY-SA 4.0"
+attribution = "New Academic Word List 1.2 by Browne, C., Culligan, B., and Phillips, J. (newgeneralservicelist.com), CC BY-SA 4.0."
+# NAWL publishes no ranked file, so this is the alphabetical list with each word's forms.
+url = "https://www.newgeneralservicelist.com/s/NAWL_12_lemmatized_for_teaching.csv"
+sha256 = "1790b0fa22c5815ebf5a9a15c9363c03a6e906c77bf217f99033734f1459137b"
+importer = "word_family"
+encoding = "cp1252"
+
+[tsl]
+name = "TOEIC Service List (TSL)"
+version = "1.2"
+license = "CC BY-SA 4.0"
+attribution = "TOEIC Service List 1.2 by Browne, C. and Culligan, B. (newgeneralservicelist.com), CC BY-SA 4.0."
+url = "https://www.newgeneralservicelist.com/s/TSL_12_stats.csv"
+sha256 = "2259df25a1077b04067ef0c0e9e4c98b46c91e4d539741dfaceba88651ff486d"
+importer = "ranked_list"
+lemma_column = "Word"
+rank_column = "TSL Rank"
+encoding = "cp1252"
+
+[bsl]
+name = "Business Service List (BSL)"
+version = "1.2"
+license = "CC BY-SA 4.0"
+attribution = "Business Service List 1.2 by Browne, C. and Culligan, B. (newgeneralservicelist.com), CC BY-SA 4.0."
+url = "https://www.newgeneralservicelist.com/s/BSL_120_stats.csv"
+sha256 = "45055265eb4e74c65f5d26edabbc1a0da38c45bbb924cd9bd01fd391b74ff157"
+importer = "ranked_list"
+lemma_column = "Word"
+rank_column = "BSL Rank"
+
 [wordfreq-en]
 name = "wordfreq word frequencies (English)"
 version = "package"

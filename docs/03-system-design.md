@@ -358,7 +358,7 @@ create index llm_calls_time on llm_calls (created_at);
 | Table | Contents |
 |---|---|
 | `ref_datasets` | One row per dataset: version, license, attribution, source URL, checksum and row count |
-| `ref_lists` | Headword lists with levels or ranks: CEFR-J and Octanove C1/C2 now; NGSL and the owner's lists later |
+| `ref_lists` | Headword lists with levels or ranks: CEFR-J, Octanove C1/C2 and the NGSL family (NGSL and its supplement, NGSL-Spoken, NAWL, TSL, BSL); the owner's lists later |
 | `ref_freq` | wordfreq Zipf values: English for ranking, Spanish as a lexicon check |
 | `ref_forms` | UniMorph lemma–form pairs, English and Spanish |
 | `ref_ipa` | CMUdict (en-US) and Britfone (en-GB), converted to IPA |

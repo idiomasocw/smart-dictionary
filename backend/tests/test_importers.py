@@ -75,6 +75,66 @@ def test_line_formats(tmp_path):
     ]
 
 
+def test_ngsl_family_formats(tmp_path):
+    stats = tmp_path / "stats.csv"
+    stats.write_text(
+        "Lemma,SFI Rank,SFI,Adjusted Frequency per Million (U)\n"
+        "the,1,87.85,60910\nbe,2,86.86,48575\n",
+        encoding="utf-8",
+    )
+    rows = list(sources.ranked_list_rows(stats, "t", lemma_column="Lemma", rank_column="SFI Rank"))
+    assert [(row[1], row[6]) for row in rows] == [("the", 1), ("be", 2)]
+    assert rows[0][7].obj == {"SFI": "87.85", "Adjusted Frequency per Million (U)": "60910"}
+    with pytest.raises(ValueError, match="Rank"):
+        next(sources.ranked_list_rows(stats, "t", lemma_column="Lemma", rank_column="Rank"))
+
+    # BSL carries empty spreadsheet columns, and TSL and NAWL are cp1252 rather than UTF-8.
+    business = tmp_path / "business.csv"
+    business.write_bytes("Word,BSL Rank,Band,U,,,581.3\nrésumé,2,1,468.5,,,\n".encode("cp1252"))
+    rows = list(
+        sources.ranked_list_rows(
+            business, "t", lemma_column="Word", rank_column="BSL Rank", encoding="cp1252"
+        )
+    )
+    assert [(row[1], row[2], row[6]) for row in rows] == [("résumé", "resume", 2)]
+    assert rows[0][7].obj == {"Band": "1", "U": "468.5"}
+
+    # Word families: a byte-order mark, ## comment lines and Windows line endings.
+    family = tmp_path / "family.csv"
+    family.write_text(
+        "## For teaching, not research\r\nMonday,Mondays\r\nzone,zones,zoned,zoning\r\nalone\r\n",
+        encoding="utf-8-sig",
+        newline="",
+    )
+    rows = list(sources.word_family_rows(family, "t"))
+    assert [(row[1], row[2]) for row in rows] == [
+        ("Monday", "monday"),
+        ("zone", "zone"),
+        ("alone", "alone"),
+    ]
+    assert rows[1][7].obj == {"forms": ["zones", "zoned", "zoning"]}
+    assert rows[2][7] is None
+
+
+def test_list_imports_fill_ref_lists(migrated_database_url, tmp_path: Path):
+    ngsl = tmp_path / "ngsl.csv"
+    ngsl.write_text("Lemma,SFI Rank,SFI\nthe,1,87.85\nbe,2,86.86\n", encoding="utf-8")
+    sup = tmp_path / "sup.csv"
+    sup.write_text("Monday,Mondays\n", encoding="utf-8")
+    ranked = _dataset("t-ngsl", "ranked_list", lemma_column="Lemma", rank_column="SFI Rank")
+    assert import_dataset(ranked, path=ngsl) == 2
+    assert import_dataset(_dataset("t-sup", "word_family"), path=sup) == 1
+    with connect() as conn:
+        rows = conn.execute(
+            "select dataset_id, lemma_norm, rank, extra from ref_lists order by dataset_id, rank"
+        ).fetchall()
+    assert rows == [
+        ("t-ngsl", "the", 1, {"SFI": "87.85"}),
+        ("t-ngsl", "be", 2, {"SFI": "86.86"}),
+        ("t-sup", "monday", None, {"forms": ["Mondays"]}),
+    ]
+
+
 def _entry(word: str, pos: str, senses: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
     return {"word": word, "pos": pos, "lang_code": "en", "senses": senses, **extra}
 
@@ -155,6 +215,9 @@ def test_manifest_lists_known_importers_in_dependency_order():
     ordered = [dataset.importer for dataset in in_import_order(manifest.values())]
     assert ordered == sorted(ordered, key=IMPORTER_ORDER.index)
     assert ordered[-1] == "kaikki"
+    for dataset in manifest.values():
+        if dataset.importer == "ranked_list":
+            assert {"lemma_column", "rank_column"} <= dataset.options.keys(), dataset.id
 
 
 def _dataset(dataset_id: str, importer: str, **options: Any) -> Dataset:

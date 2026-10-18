@@ -68,7 +68,7 @@ def _data(action: str, ids: list[str], every: bool, force: bool) -> None:
     manifest = load_manifest()
     if action == "list":
         for dataset in manifest.values():
-            print(f"{dataset.id:<15} {dataset.importer:<10} {dataset.license}")
+            print(f"{dataset.id:<15} {dataset.importer:<12} {dataset.license}")
         return
     unknown = sorted(set(ids) - manifest.keys())
     if unknown or not (ids or every):

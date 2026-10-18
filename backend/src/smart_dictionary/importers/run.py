@@ -14,7 +14,16 @@ from smart_dictionary.importers.manifest import Dataset
 log = logging.getLogger(__name__)
 
 # The Wiktionary filter reads the lists and frequencies, so it goes last.
-IMPORTER_ORDER = ["cefr_list", "wordfreq", "unimorph", "cmudict", "britfone", "kaikki"]
+IMPORTER_ORDER = [
+    "cefr_list",
+    "ranked_list",
+    "word_family",
+    "wordfreq",
+    "unimorph",
+    "cmudict",
+    "britfone",
+    "kaikki",
+]
 
 
 def in_import_order(datasets: Iterable[Dataset]) -> list[Dataset]:
@@ -48,6 +57,19 @@ def _plan(
                 sources.LIST_COLUMNS,
                 sources.cefr_list_rows(_file(path), dataset.id),
             )
+        case "ranked_list":
+            rows = sources.ranked_list_rows(
+                _file(path),
+                dataset.id,
+                lemma_column=options["lemma_column"],
+                rank_column=options["rank_column"],
+                encoding=options.get("encoding", sources.LIST_ENCODING),
+            )
+            return "ref_lists", sources.LIST_COLUMNS, rows
+        case "word_family":
+            encoding = options.get("encoding", sources.LIST_ENCODING)
+            rows = sources.word_family_rows(_file(path), dataset.id, encoding=encoding)
+            return "ref_lists", sources.LIST_COLUMNS, rows
         case "wordfreq":
             rows = sources.wordfreq_rows(dataset.id, options["language"], int(options["top_n"]))
             return "ref_freq", sources.FREQ_COLUMNS, rows
