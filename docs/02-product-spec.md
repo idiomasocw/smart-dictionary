@@ -100,8 +100,9 @@ The order of v2–v5 is negotiable in the roadmap.
 |---|---|
 | TF-1 | **Push a word:** a moderator shares an entry or sense, and every participant gets the card in their own L1 (a notification that opens the panel) |
 | TF-2 | **Class word list:** a live list of what was looked up in this meeting. Counts are aggregated and anonymous by default, and only moderators see it |
-| TF-3 | **Hide / flag:** a moderator can hide an example, translation, note or whole sense immediately, everywhere, with a reason. The item goes to the repair queue, and the hide can be undone |
+| TF-3 | **Hide / flag** any example, translation, note, pronunciation or whole sense, with a reason from §5.7 and an optional comment. **Hide now** removes the item for every student at once and queues it for repair. Only **verified teachers** can hide (LMS role `teacher` or `staff`), because BBB also makes some students moderators. **Flag for revision** changes nothing on screen and queues the item for repair with priority; any moderator can flag, and flags from moderators who aren't verified teachers are triaged first (CG-8). Both can be undone and have a daily cap per person (default 20), and every action is logged (who, when, why) |
 | TF-4 | **Recap** (v1.x): at the end of class, the word list can be shared in chat or as a link |
+| TF-5 | **Micro-review** (v1.x, optional): "Review 5 words from your class this week" shows the lowest-confidence entries the class actually looked up. The teacher gives each sense a thumbs up or down, and a thumbs down becomes a flag. Never required |
 
 ### 5.5 Content growth and quality (CG)
 
@@ -111,9 +112,12 @@ The order of v2–v5 is negotiable in the roadmap.
 | CG-2 | **Factory runs:** each routine run you start takes the next batch by priority (default 40 entries), repairs first |
 | CG-3 | **Automated QA:** validators, the in-run reviewer and server spot checks. Entries that pass publish automatically; failures get up to 2 repair attempts, then quarantine |
 | CG-4 | **Provisional → final:** provisional entries get priority in the next runs, and the final entry replaces the provisional one under the same key |
-| CG-5 | **Reports:** a student can report a problem (wrong translation, bad example, other), and reports are triaged automatically |
+| CG-5 | **Reports:** any student or teacher can report a problem with one specific item (a translation, example, meaning, note or pronunciation), picking a reason from §5.7 in their own language, with an optional comment. One report per person per item, a daily cap per student (default 10), and none from inactive accounts. A report never changes content by itself |
 | CG-6 | **Golden set:** 50 entries you rate once, re-run on every prompt or model change; the QA thresholds are tuned against it |
-| CG-7 | **Audits:** a sample of published entries is re-reviewed regularly |
+| CG-7 | **Audits:** a sample of published entries is re-reviewed regularly, and every published entry is re-validated whenever the validators improve |
+| CG-8 | **Triage and repair:** reports, and flags from moderators who aren't verified teachers, are triaged automatically (is it valid, which item, what's the likely fix). A valid one sends the entry to repair with the evidence attached; hides and verified teachers' flags go straight to repair. Three different people reporting the same item within 30 days send it to repair without waiting for triage. Every fix passes the normal QA (CG-3) before it's republished |
+| CG-9 | **Reporter feedback:** students see their reports and what happened to each one ("My reports"), and get a notification when a report leads to a fix |
+| CG-10 | **Behavior signals:** normal use raises an item's *suspicion score*, and items above a threshold are re-reviewed automatically. The signals: another sense opened right after the dictionary ranked one first; the same word looked up again and again; cards closed within a second; review cards failed unusually often; many coach failures on one sense; teacher hides clustered in one generation batch |
 
 ### 5.6 Operations (OP)
 
@@ -122,6 +126,22 @@ The order of v2–v5 is negotiable in the roadmap.
 | OP-1 | **Stats endpoint:** counts by status and CEFR, misses, reports, AI spend, latency (the dashboard comes after v1) |
 | OP-2 | **AI spend cap:** a hard monthly cap on paid providers ($5 by default), with automatic fallback to the free tier and an alert at 80% |
 | OP-3 | **Backups** nightly, with a restore tested monthly |
+
+### 5.7 Report reasons
+
+Reports (CG-5), flags and hides (TF-3) all use one short list, shown in the reporter's language:
+
+| Reason | Example |
+|---|---|
+| Wrong translation | The Spanish equivalent doesn't mean this |
+| Wrong meaning | The definition doesn't match the word |
+| Unnatural example | No one would say this sentence |
+| Wrong pronunciation or audio | The IPA or the recording is off |
+| Typo | A spelling mistake anywhere in the entry |
+| Missing meaning | The meaning I needed isn't there (reported on the whole entry) |
+| Hard to understand | The definition or note is too difficult for its level |
+| Offensive or inappropriate | Unsuitable for the 16+ audience |
+| Other | Anything else; a comment is required |
 
 ---
 
@@ -172,7 +192,7 @@ An entry is one **lemma + part of speech** (*run* the verb and *run* the noun ar
 | NF-4 | Payload | An entry card is ≤ 15 KB gzipped; images and clips are never inline |
 | NF-5 | Accessibility | Plugin meets WCAG 2.2 AA: keyboard operable, screen-reader labels, visible focus; layout ready for RTL (Arabic later) |
 | NF-6 | i18n | Plugin UI in English and Spanish at v1, with Portuguese and Arabic later; all strings externalized |
-| NF-7 | Privacy | Data minimization and pseudonymous external IDs. Lookups are kept 12 months; use-it coach inputs 30 days; deletion on request. Before enrolling anyone under 18: a privacy check of the age rules where students live, plus each AI provider's terms |
+| NF-7 | Privacy | Data minimization and pseudonymous external IDs. Lookups are kept 12 months; use-it coach inputs 30 days; reports 12 months after they're resolved; behavior signals 90 days; deletion on request. Before enrolling anyone under 18: a privacy check of the age rules where students live, plus each AI provider's terms |
 | NF-8 | Security | Identity only from the BBB proxy; no secrets in the browser; rate limits per student and per IP; moderator actions logged |
 | NF-9 | Cost | Infrastructure ≈ $30–35/month (a dedicated EC2 + a Supabase project; see `05` §9); runtime AI ≤ $5/month (hard cap); content generated through the Max 5x routine |
 | NF-10 | Maintainability | One backend language; typed contracts (OpenAPI → TS); automated tests and content evals in CI |
@@ -193,9 +213,10 @@ An entry is one **lemma + part of speech** (*run* the verb and *run* the noun ar
    - **Header:** word, POS, CEFR, US/UK audio buttons.
    - **L1 equivalents** shown prominently.
    - **Senses** as an accordion, each with ★ *Save*, *Use it*, *More examples* and *Compare*.
-4. **My words:** saved senses, plus *Review now (N due)*.
-5. **Teacher tools** (moderators only): *Push to class* on every card, a *Class words* list, and *Hide / flag* on every example, translation and note.
-6. **Pushed-word notification** for students: tap it to open the card.
+   - **⚑ Report** on every meaning, example, translation, note and pronunciation, and once for the whole entry (for a missing meaning). It opens the reason list (§5.7): two taps, plus an optional comment.
+4. **My words:** saved senses, *Review now (N due)*, and *My reports* with the status of each report.
+5. **Teacher tools:** *Push to class* on every card, a *Class words* list, and *Flag* on every example, translation, note, pronunciation and sense (moderators). *Hide* also appears for verified teachers.
+6. **Notifications** for students: a pushed word (tap to open the card), and "your report fixed *actually*".
 
 ### 8.2 Key flows
 
@@ -206,7 +227,8 @@ An entry is one **lemma + part of speech** (*run* the verb and *run* the noun ar
 | **F3. Use-it coach** | On a sense, tap *Use it* → write a sentence → get a verdict, a correction and a reason in L1 → optionally save the sense |
 | **F4. Review** | *My words* → *Review now* → cards in the FSRS order → grade each → next due date shown |
 | **F5. Missing word** | Search a word with no entry → a *Beta* card appears within seconds → the full entry replaces it after a later routine run |
-| **F6. Bad content** | The teacher taps *Hide* on an example → it disappears for everyone → the repair queue fixes it in a later run |
+| **F6. Bad content** | A verified teacher taps *Hide* on an example and picks a reason → it disappears for everyone → a later routine run repairs it → it's republished after QA |
+| **F7. Student report** | A student taps ⚑ on a translation → picks *Wrong translation* → automatic triage → if it's valid, a later run fixes it → the student gets "your report fixed *…*" |
 
 ---
 
@@ -217,6 +239,7 @@ An entry is one **lemma + part of speech** (*run* the verb and *run* the noun ar
 | Miss rate (lookups with no entry) | < 10% at 5k entries; < 4% at 20k |
 | Lookup latency | p95 < 150 ms on the server; < 1 s from opening the panel to seeing a result |
 | Content quality | Reports < 2 and teacher hides < 1 per 1,000 lookups; golden-set agreement ≥ 90% |
+| Quality response | Median ≤ 3 days from a valid report or flag to the fix being republished; ≥ 50% of student reports triaged as valid (fewer suggests the report flow confuses people) |
 | Engagement | ≥ 30% of students in a class look something up; ≥ 20% save at least one word per week |
 | Learning | ≥ 80% recall at 7 days among students who review |
 | Cost | AI ≤ $5/month; infrastructure ≈ $30–35/month |
@@ -253,3 +276,7 @@ An entry is one **lemma + part of speech** (*run* the verb and *run* the noun ar
 | **Routine** | A Claude Code cloud run of the content factory, started by you |
 | **Golden set** | The 50 entries you rate, used to calibrate and regression-test quality |
 | **FSRS** | Free Spaced Repetition Scheduler, the algorithm behind the review deck |
+| **Hide / flag** | A teacher's action on one item: a hide (verified teachers only) removes it at once; a flag (any moderator) only queues it for repair |
+| **Report** | A student's or teacher's note that one item is wrong; it never changes content by itself |
+| **Suspicion score** | How likely an item is to be wrong, from reports, flags and behavior signals; above a threshold the item is re-reviewed automatically |
+| **Verified teacher** | Someone whose LMS role is `teacher` or `staff`, not just a BBB moderator |

@@ -79,6 +79,7 @@ Phase 6                                               ████████�
 - Daily manual runs, repairs first, then by tier.
 - Nightly TTS and embedding backfill.
 - Audit slots in every 10th batch; a weekly glance at `/v1/admin/stats`: pass rate, quarantines, reports.
+- Whenever the validators change, re-validate every published entry and send failures to repair [CG-7].
 
 **Milestone M3:** ≥ 5,000 published entries covering CEFR-J A1–B2, top-tier phrasal verbs and idioms, and your lists.
 
@@ -90,7 +91,7 @@ Phase 6                                               ████████�
 | 4.2 | Plugin scaffold with `sdk-adapter/`, the generated API client, i18n EN/ES | §9.1–9.3 | NF-6 |
 | 4.3 | Floating panel: search, autocomplete, direction toggle, entry card, US/UK audio | §8, §4 | LK-1…7, EC-* |
 | 4.4 | Chat selection → context lookup (API: G3, §4.4, spaCy + embeddings) | §4.4 | LK-8 |
-| 4.5 | Teacher tools: push, class words, hide/flag | §8 | TF-1…3 |
+| 4.5 | Teacher tools: push, class words; *Flag* for moderators and *Hide* for verified teachers (LMS role), with reasons, caps and undo | §8, §6.6 | TF-1…3 |
 | 4.6 | Accessibility pass; payload and latency check | — | NF-1, 4, 5 |
 | 4.7 | **In an LMS session:** L1 learner-profile endpoint + `DICTIONARY_SERVICE_TOKEN`; L2 pilot `pluginManifests` flag | 05 §6.2 | LK-9 |
 | 4.8 | BBB server: the nginx identity proxy, after the 4.0 upgrade | §9.4 | NF-8 |
@@ -107,9 +108,10 @@ Phase 6                                               ████████�
 | 5.4 | Tailored examples, with weekly promotion into entries | §7.1, §7.5 | LF-4 |
 | 5.5 | Explain the difference; the routine pre-generates frequent confusable pairs | §7.1 | LF-5 |
 | 5.6 | Saved words, review deck (FSRS), My words tab, history | §8 | LF-1, 2, 6 |
-| 5.7 | Report button + triage job | §6.6 | CG-5 |
+| 5.7 | Reports: ⚑ with the reason list (spec §5.7), caps and dedupe; the triage job and the 3-reporter rule; repair packs with evidence; *My reports* and fix notifications; `/v1/admin/quality` | §6.6, §8 | CG-5, 8, 9 |
+| 5.8 | Behavior signals (`/v1/events` plus server-side ones) → suspicion-score job → automatic re-checks; batch-cluster re-checks | §6.6 | CG-10 |
 
-**Exit:** every v1 AI feature is live under the $5 cap, and the fallback chain has been tested by deliberately failing each provider.
+**Exit:** every v1 AI feature is live under the $5 cap; the fallback chain has been tested by deliberately failing each provider; and a test report has gone all the way from ⚑ to a republished fix and the reporter's notification.
 
 ### v1 launch (≈ W8–W9)
 
@@ -132,7 +134,7 @@ Launch when **all** of these hold:
 
 | Release | Contents |
 |---|---|
-| v1.x | "Words on this slide", end-of-class recap, better stats |
+| v1.x | "Words on this slide", end-of-class recap, teacher micro-review (TF-5), better stats |
 | v2 | Admin dashboard; **Portuguese layer** (a pt-BR layer pass over published entries) |
 | v3 | **Clips**, after the rights decision (audit §8) |
 | v4 | Arabic layer |
@@ -168,6 +170,7 @@ At 40 entries per run:
 | 4 | SDK 1.0 beta differs from what the research found | The spike comes first; the `sdk-adapter/` isolates changes |
 | 4 | The `auth_request` pattern doesn't work on 4.0 | Fallback: a portal-signed join token (system design §9.4) |
 | 5 | A provider outage or a price change | The fallback chain; prices live in config; the cap |
+| 5 | Report spam, misused hides, or noisy behavior signals | Caps and dedupe; hides only by verified teachers, logged and undoable; reports never change content; suspicion weights start conservative and are tuned on pilot data |
 | 1 | Supabase's pooler and `LISTEN/NOTIFY` (Procrastinate) | Session mode or a direct IPv6 connection; verified in task 1.7 |
 | All | Cost creep on AWS or Supabase | AWS Budgets alert; start on t4g.medium and Supabase Micro; resize only when alarms say so |
 

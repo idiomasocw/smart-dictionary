@@ -37,10 +37,10 @@
 
 | Component | Responsibility | Technology |
 |---|---|---|
-| **plugin** | In-class UI: lookup, cards, My words and review, coach, teacher tools; data channels | React + TypeScript + Vite, BBB plugin SDK 1.0 (pinned) |
+| **plugin** | In-class UI: lookup, cards, My words and review, coach, reports, teacher tools; data channels | React + TypeScript + Vite, BBB plugin SDK 1.0 (pinned) |
 | **bbb-proxy** | Checks the BBB session and injects identity headers plus the shared secret | nginx `auth_request` snippet on the BBB server |
 | **api** | REST v1: lookup, search and context; learner data; AI endpoints; factory and admin endpoints | Python 3.13, FastAPI, Pydantic v2, SQLAlchemy 2 (async, psycopg 3), spaCy, ONNX Runtime |
-| **worker** | Jobs and schedules: the publish pipeline (validate → project → embed → TTS), seed builder, spot checks, report triage, exports, retention | Procrastinate (Postgres-backed) |
+| **worker** | Jobs and schedules: the publish pipeline (validate → project → embed → TTS), seed builder, spot checks, report triage, suspicion scores, re-validation sweeps, exports, retention | Procrastinate (Postgres-backed) |
 | **database** | Content (documents + projections), search indexes, vectors, jobs, learner data, usage, AI cache and spend | A dedicated Supabase project (us-east-2) used as plain Postgres + pgvector, pg_trgm, unaccent, fuzzystrmatch; Data API off |
 | **lms-adapter** | Pulls the learner profile (L1, region, level, role, active) from the LMS and caches it for 24 h | HTTP client + `DICTIONARY_SERVICE_TOKEN` (05 §6.2) |
 | **caddy** | TLS, reverse proxy, compression, static hosting for the plugin bundle | Caddy 2 |
@@ -123,7 +123,7 @@ validating ──(passes)──────────────────�
 validating ──(fails, attempts < 2)───────────────────▶ needs_repair ──(next batch)──▶ generating
 validating ──(fails, attempts = 2)───────────────────▶ quarantined
 missing word ──(gateway)──▶ provisional ──(leased with top priority)──▶ generating …
-published ──(teacher hide / valid report / failed audit)──▶ needs_repair   (the live entry stays; hidden parts are filtered)
+published ──(hide, flag or valid report / failed re-check or audit)──▶ needs_repair   (the live entry stays; hidden parts are filtered)
 any ──(owner)──▶ retired
 ```
 
@@ -352,6 +352,7 @@ create index llm_calls_time on llm_calls (created_at);
 - **Phonetic matching:** `entry_forms.phonetic` holds a Double Metaphone key computed by the app, instead of an index on `dmetaphone()`.
 - **UUIDv7:** the hosted project runs PostgreSQL 17, so IDs are generated in the app (`core/ids.py`), with `gen_random_uuid()` defaults as a safety net.
 - **API-role lockdown:** the migration revokes Supabase's default grants to `anon` and `authenticated`, even though the Data API is off.
+- **Seed candidates (revision 0004):** `seed_candidates` also holds the seed file's `variants`, `patterns` and `flags`, the `originals` lines and a `homograph` number. Uniqueness is `(lemma_norm, pos, kind, homograph)`, as for entries, so *Pole* and *pole* can both be noun candidates.
 
 **Reference data:** `smart-dictionary data fetch` and `data import` load the open datasets listed in `data/datasets.toml` into read-only `ref_*` tables. Revisions `0002_reference_tables.py` and `0003_wiktionary_variants.py` are authoritative for their columns.
 
@@ -428,6 +429,7 @@ class Related(BaseModel):
 
 class Pattern(BaseModel):              # required for phrasal verbs, idioms and phrases
     tokens: list[dict]                 # {"lemma": "run"} | {"text": "the"} | {"slot": "sb"}
+                                       # slots: sb, sth, sb/sth, sb's, one's, oneself, somewhere, doing sth
     separable: bool = False
     max_gap: int = 0
 
@@ -447,7 +449,7 @@ class EntryDoc(BaseModel):
     provisional: bool = False
 ```
 
-**Filled by the server, not the AI:** frequency band, inflected forms (UniMorph/LemmInflect), audio, embeddings, L1 forms, and `quality`. The AI may add irregular forms and spelling variants, which the validators then check.
+**Filled by the server, not the AI:** frequency band, inflected forms of the lemma and of each spelling variant (UniMorph/LemmInflect: *realise* → *realised*), audio, embeddings, L1 forms, and `quality`. The AI may add irregular forms and spelling variants, which the validators then check.
 
 ---
 
@@ -554,8 +556,13 @@ Caddy accepts `bbb` traffic only from the BBB server's IP. Factory and admin rou
 | POST | `/v1/ai/difference` `{a, b}` | bbb | Explain the difference | LF-5 |
 | GET | `/v1/meetings/current/words` | bbb (moderator) | Class word list | TF-2 |
 | POST | `/v1/meetings/current/pushes` `{target_key}` | bbb (moderator) | Log a push; the plugin broadcasts it over a data channel | TF-1 |
-| POST · DELETE | `/v1/flags` · `/v1/flags/{id}` | bbb (moderator) | Hide/flag and undo | TF-3 |
-| POST | `/v1/reports` `{target_key, kind, comment?}` | bbb | Student report | CG-5 |
+| POST | `/v1/flags` `{target_key, action, reason, comment?}` | bbb: `flag` needs a moderator; `hide` needs a verified teacher (LMS role `teacher` or `staff`) | Hide or flag one item | TF-3 |
+| DELETE | `/v1/flags/{id}` | bbb: its author, or staff | Undo a hide or flag | TF-3 |
+| POST | `/v1/reports` `{target_key, reason, comment?}` | bbb (any active user) | Report a problem; answers 202 | CG-5 |
+| GET | `/v1/me/reports` | bbb | My reports and what happened to each | CG-9 |
+| POST | `/v1/events` `[{type, target_key}]` | bbb | Behavior signals only the plugin sees (sense reselected, card closed quickly); batched and rate-limited | CG-10 |
+| GET · POST | `/v1/teacher/micro-review` (v1.x) | bbb (verified teacher) | Five entries to review; thumbs up or down per sense | TF-5 |
+| GET | `/v1/admin/quality` | admin | Open reports and flags, the suspicion queue, time to fix | CG-8, OP-1 |
 | POST | `/v1/factory/batches` `{size, label}` | factory | Lease the next batch, with grounding packs | CG-2 |
 | POST | `/v1/factory/batches/{id}/entries` | factory | Submit EntryDocs and review results | CG-3 |
 | GET | `/v1/factory/batches/{id}` | factory | Batch outcome | CG-3 |
@@ -617,6 +624,8 @@ You asked whether there's a better way to reach 20k than your own lists. My answ
   - **Optional parts become variants of one entry.** *(sitting) on top of the world* is `on top of the world` with the variant `sitting on top of the world`, never two entries.
   - **Complements become patterns.** *(with someone)* goes to `patterns`.
   - **Placeholders are spelled out** (someone, something, one's). A trailing one is dropped from the lemma, as in *run into*.
+  - **The US spelling is the headword.** The UK spelling becomes a variant tagged UK, written `colour [UK]` in the CSV. Pairs come from Wiktionary's regional-spelling pointers, plus regular endings (-our, -re, -ise, -ence) where both spellings are listed, plus a short list of regional pairs Wiktionary marks only as alternatives (*plough*, *plow*; *on second thoughts*, *on second thought*). A UK spelling that matches only some meanings of the US word (cheque, tyre, metre, licence) stays a separate entry.
+  - **One word, one entry.** A capitalized and a lowercase row merge only when they're the same word (*internet*, *OK*); *March* and *march* stay apart. A row that another row lists as a variant folds into it. A word Wiktionary records only as an inflection is flagged with its lemma rather than folded, because many such plurals and participles are headwords in their own right (*savings*, *terms*, *located*).
 - The open lists:
   - CEFR-J 1.6 (7,801 A1–B2 lemma+POS rows);
   - Octanove C1/C2;
@@ -629,7 +638,7 @@ You asked whether there's a better way to reach 20k than your own lists. My answ
 1. **Parse and normalize.** Multiword items are split, and kinds are guessed: verb + particle → phrasal verb; Wiktionary idiom tag → idiom.
 2. **Lemmatize single words** (LemmInflect/UniMorph). An inflected list item maps to its lemma, and the original is kept as evidence.
 3. **Assign POS.** POS comes from the source when it has one, otherwise from CEFR-J or Wiktionary. A lemma with several learner-relevant POS gives one candidate per POS.
-4. **Deduplicate** on `(lemma_norm, pos, kind)`, merge sources, and fold US/UK spelling pairs into one entry with `variants`.
+4. **Deduplicate** on `(lemma_norm, pos, kind)`, merge sources, and fold US/UK spelling pairs into one entry: the US spelling is the lemma, and the UK one is a variant with `regions: ["UK"]`.
 5. **Filter out:** proper nouns, archaic or offensive-only items, tokens with digits, and words with Zipf < 2.0. Your own lists override every filter.
 6. **Tier and order.**
 
@@ -644,6 +653,15 @@ You asked whether there's a better way to reach 20k than your own lists. My answ
    Within a tier, items are ordered by Zipf. Multiword items have no unigram frequency, so they're ordered by how many lists contain them plus the curation score (step 7).
 7. **Curation run** (a special routine batch, about 500 candidates per run). Claude marks each candidate keep/drop, confirms kind and POS, flags offensive or archaic items, scores learner usefulness from 1 to 5 (for multiword items), and **proposes missing high-value phrasal verbs and idioms**.
 8. **Export** the ranked list as CSV (`GET /v1/admin/seeds/export`) for you to skim, then **queue** it.
+
+**Built so far (roadmap 2.1):** `smart-dictionary seeds import` runs steps 2–4 and 6 into `seed_candidates`, and `seeds export` writes the ranked CSV of step 8 to `data/raw/seed-candidates.csv`.
+- **Parts of speech** come from the CEFR lists, then from each Wiktionary part of speech with at least 3 senses and 40% of the main one's, then from UniMorph. A spelling variant's entry counts its main spelling's senses (*catalog*).
+- **Open-list items** take their US spelling and lemma before matching (*centre* → *center*, *were* → *be*).
+- **Spacing variants** fold when Wiktionary records one as the other's alternative form (*best seller* → *bestseller*). Other pairs with the same part of speech are flagged.
+- **Homographs** are numbered as entry keys are (*pole*, *Pole* → `en:pole:n~2`).
+- **Not yet:** the step-5 filters and the curation run (step 7).
+
+A re-run replaces the undecided candidates and keeps the decided ones. Seed candidates and their variants join the Wiktionary keep set, so the full order is `seeds import`, `data import kaikki-en`, then `seeds import` again.
 
 **Target mix (to tune with your lists):** ~14k words, ~3k phrasal verbs, ~2k idioms, ~1k collocations and fixed phrases.
 
@@ -665,7 +683,7 @@ You asked whether there's a better way to reach 20k than your own lists. My answ
 
 Wiktionary sense hints are cut to about 12 words each. They only signal which meanings exist; validator V9 enforces originality.
 
-When an entry comes back for repair, `existing_keys` and `repair` carry the published keys, the failed checks, teacher hides and valid reports, so the fix keeps the keys stable.
+When an entry comes back for repair, `existing_keys` and `repair` carry the published keys, the failed checks, hides and flags, valid reports and a signal summary (§6.6), so the fix keeps the keys stable.
 
 ### 6.3 The routine [CG-2, ADR-008]
 
@@ -735,12 +753,74 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
 3. **Generate:** the gateway task `provisional_entry` (Haiku → DeepSeek → Groq) returns 1–2 senses, one example each and the es-419 layer, as structured output.
 4. **Validate** with V1–V5, V10 and V11, then **publish** with status `provisional` and top priority. The next routine run leases it, and the final entry replaces it under the same key.
 
-### 6.6 Repairs, hides, reports, audits and the golden set
+### 6.6 The quality loop: flags, reports, signals, audits and the golden set
 
-- **Teacher hide** [TF-3]: the item is filtered immediately, and the entry moves to `needs_repair` with the hidden item and its reason in the repair pack.
-- **Report** [CG-5]: a triage job (Haiku, within budget) marks it valid or invalid and maps it to a key. Valid reports become repairs.
+Every route ends in the same repair path, and every item is addressed by its key (`en:house:n#1.ex2`), so a fix rewrites one piece and leaves the rest of the entry, saved words and review cards untouched.
+
+```
+teacher hide / flag ──┐
+student report ───────┼─▶ triage ─▶ needs_repair + evidence ─▶ routine run ─▶ QA (CG-3) ─▶ republish ─▶ close + notify
+behavior signals ─────┤             (suspicion score)
+audits, golden set ───┘
+```
+
+**Intake**
+- **Hide** [TF-3]: verified teachers only, checked against `users.role` from the LMS profile, since a BBB moderator may be a student. It writes `content_flags` and sends `NOTIFY flags_changed`, so the item leaves every card at once.
+- **Flag** [TF-3]: any moderator. Nothing changes on screen.
+- **Caps:** at most 20 hides and flags per person per day. Both are logged and can be undone.
+- **Report** [CG-5]:
+  - the server rejects a second open report from the same person on the same item, more than 10 a day, and inactive accounts;
+  - the answer is 202, with the report's status visible later in `/v1/me/reports`.
+- **Signals** [CG-10] are written to `quality_signals`:
+  - from data the server already has: repeated lookups (`lookups`), failure rates (`review_logs`), "incorrect" coach verdicts;
+  - from the plugin, through `/v1/events`: another sense opened right after a ranked one, a card closed within a second;
+  - each user counts at most once per item, signal and day, so one student can't move a score alone.
+
+**Triage** [CG-8]
+- **Hides, and flags from verified teachers, skip triage:** the entry goes straight to `needs_repair`. Flags from other moderators are triaged like reports.
+- **Reports get an AI triage job** (Haiku, within the AI budget): valid or not, which key, which issue, a suggested fix. Duplicates are merged.
+- **Three different reporters** on one item within 30 days send it to repair without waiting for triage.
+- **When the budget is spent,** triage waits for the next routine run, which can triage a batch of reports itself.
+
+**Suspicion score** (`item_suspicion`)
+- The score is a weighted sum with a 30-day half-life. Starting weights, to be tuned with real data:
+
+  | Signal | Weight |
+  |---|---|
+  | Hide | 5 |
+  | Flag | 3 |
+  | Valid report | 3 |
+  | Open report | 1 |
+  | Sense reselected | 0.2 |
+  | Repeat lookup | 0.1 |
+  | Quick close | 0.05 |
+  | Review-card failure rate above twice its level's median (weekly) | 1 |
+  | Coach-failure anomaly (weekly) | 1 |
+
+- Above the threshold (start at 5), the item is re-reviewed. First the validators and a server spot check (`spot_check`, §7.1) run again. If they find a problem, the entry goes to repair with the evidence attached. If they don't, the score resets and the item is left alone for 30 days.
+- **Clusters:** hides clustered in one factory batch trigger a re-check of the whole batch, because they usually point to a prompt or model problem.
+
+**Repair and close**
+- **The repair pack** carries the reports, flags and a signal summary. The routine fixes the named item. Its key stays when the meaning is unchanged; a sense whose meaning was wrong is retired and replaced under a new key (§3.1).
+- **Validators and QA** run as for any entry, and the fix is republished.
+- **Closing:**
+  - The reports become `fixed` and the flags resolved, both with `fixed_by_revision` set. Reporters are notified the next time they open the plugin [CG-9].
+  - Reports the routine finds groundless become `invalid`, and their reporters see that too.
+  - A hide is lifted when the repaired item is published. If the routine finds nothing wrong and leaves the item unchanged, the hide stays until its teacher or the owner lifts it.
+
+**Proactive checks**
 - **Audits** [CG-7]: every 10th batch includes 5 published entries for re-review.
+- **Re-validation** [CG-7]: when the validators' version changes, a job re-validates every published entry, and failures go to repair.
 - **Golden set** [CG-6]: 50 entries chosen across levels and kinds, with your ratings in `factory/golden/ratings.csv`. `validate.py --golden` measures how well the reviewer agrees with your ratings, and CI runs it whenever `factory/` changes. The target is agreement ≥ 90%.
+- **Teacher micro-review** [TF-5, v1.x]: each teacher gets the five most suspicious or lowest-quality entries their classes looked up in the last 7 days. A thumbs down becomes a flag, and a thumbs up lowers the suspicion score.
+
+**Schema changes** (a later migration; the §3.4 sketch and revision 0001 predate them)
+- **Targets:** `target_key` is a sense, example or note key; `sense_key|variety|term` for an equivalent; `entry_key|ipa|variety` for a pronunciation; or, for a *missing meaning* report only, the entry key.
+- **`reports`:** `kind` becomes `reason`, with the list from spec §5.7 (`wrong_translation`, `wrong_meaning`, `unnatural_example`, `wrong_pronunciation`, `typo`, `missing_meaning`, `hard_to_understand`, `offensive`, `other`). It gains `entry_key`, `resolved_at`, `fixed_by_revision` (→ `entry_revisions`) and `notified_at`. The statuses become `open`, `valid`, `invalid`, `duplicate` and `fixed`, and a unique index on `(reporter, target_key)` covers the open and valid ones.
+- **`content_flags`:** gains `entry_key`, `comment`, `resolved_at` and `fixed_by_revision`, and its `reason` uses the same list. An active hide has neither `undone_at` nor `resolved_at`; the card filter and the partial index check both.
+- **New tables:**
+  - `quality_signals (tenant_id, user_id, target_key, entry_key, signal, weight, observed_at)`: append-only, at most one row per user, item, signal and day (aggregate signals have no user);
+  - `item_suspicion (target_key primary key, entry_key, score, last_signal_at, last_reviewed_at)`: derived, kept current by a worker job.
 
 ---
 
@@ -754,7 +834,7 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
 | `examples` | sense key, topic?, level? | 3 × {text, translation} | 400 | (sense, topic, level), permanent | 30 |
 | `difference` | two sense keys | contrast (≤ 80 words, L1), 2 examples | 400 | (sorted pair, L1), permanent | 20 |
 | `provisional_entry` | query | provisional EntryDoc | 900 | (q_norm), permanent | 10 |
-| `triage_report` | report + target content | valid?, key, issue | 150 | — | — |
+| `triage_report` | report or flag + target content | valid?, key, reason, likely fix | 150 | — | — |
 | `spot_check` | entry doc + rubric | per-check verdicts | 600 | (key, content_version) | budget-limited |
 
 Every prompt is grounded in the published card (definition, L1 gloss, examples), so answers stay consistent with the dictionary.
@@ -812,8 +892,13 @@ A generated example that passes the validators and has gathered no reports after
   - Receivers fetch the card in their own L1.
   - The push is logged through `POST /v1/meetings/current/pushes`.
 - **Hide / flag** [TF-3]:
-  - Writes `content_flags` and sends `NOTIFY flags_changed`, so the item disappears from every card at once.
-  - The entry moves to `needs_repair` (§6.6), and the hide can be undone.
+  - Hiding needs a verified teacher: `users.role` is `teacher` or `staff`, from the LMS profile. A BBB moderator who isn't one can only flag.
+  - Both write `content_flags`; a hide also sends `NOTIFY flags_changed`, so the item disappears from every card at once.
+  - The entry moves to `needs_repair` (§6.6). The author or staff can undo, and every action stays in the log.
+- **Reports and feedback** [CG-5, CG-9]:
+  - ⚑ on any item opens the reason list.
+  - `/v1/me/reports` shows each report's status.
+  - When a report leads to a fix, the plugin shows "your report fixed *…*" the next time the student opens it.
 
 ---
 
@@ -999,6 +1084,7 @@ volumes: { caddy_data: {} }
 |---|---|
 | Spoofed identity | `bbb` context accepted only with the proxy secret, from the BBB server's IP; identity comes from BBB's own session check |
 | Abuse of AI or provisional endpoints | Per-student quotas, the global cap, gate checks, advisory locks |
+| Report spam or vandalism by hiding | Reports: one open report per person per item, 10 a day, none from inactive accounts, and they never change content directly. Hides: verified teachers only (LMS role). Hides and flags: 20 a day per person, logged, undoable. Signals: one per user, item, signal and day |
 | Prompt injection through student text | Strict output schemas, no tools, no secrets in prompts, output validation |
 | Injection through grounding data | Wiktionary text is treated as data; a factory token can only reach `/v1/factory/*` |
 | XSS through content | The plugin renders text only, never HTML from the API; CSP on the plugin assets |
@@ -1015,6 +1101,8 @@ volumes: { caddy_data: {} }
 | `lookups` | History, class lists, metrics | 12 months (monthly partitions) |
 | `saved_items`, `review_*` | Learning | Until deletion |
 | `check_sentence` cache | Performance | 30 days |
+| `reports` (reporter, reason, comment), `content_flags` | Quality control | 12 months after the report or flag is resolved; comments are never logged |
+| `quality_signals` | Suspicion scores | 90 days; `item_suspicion` keeps only the aggregate |
 | `llm_calls` (no raw text) | Cost and reliability | 12 months |
 
 - **Deletion:** an admin CLI/endpoint deletes a student's rows by external ID and anonymizes their lookups.
@@ -1030,7 +1118,7 @@ volumes: { caddy_data: {} }
   - AI: calls, spend and fallback rate by provider;
   - factory: entries per batch, pass rate, repairs, quarantines;
   - pipeline: queue depth by status;
-  - quality: the quality-score distribution, and reports and hides per 1,000 lookups.
+  - quality: the quality-score distribution; reports and hides per 1,000 lookups; median time from a valid report or flag to the republished fix; the share of reports triaged valid; the size of the suspicion queue; hides per teacher.
 - **Alerts (Uptime Kuma):** `/readyz` down, disk > 80%, a missing backup heartbeat, AI spend ≥ 80%, a spike in 5xx errors.
 
 ---
