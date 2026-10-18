@@ -20,6 +20,7 @@ An English learner's dictionary for OneCulture World. Entries are pre-populated 
 - **The LMS integrates through HTTP contracts only** (05 §6). Never read LMS tables, and never store student names, emails or phones.
 - **No LLM in the lookup path.** Request-time AI goes through the gateway, with its $5/month cap.
 - **Secrets** never go in the repo; `backend/.env` is local only.
+- **Git:** the owner runs every `git add` and `git commit`. Propose the exact commands, grouped into logical commits, and never add Co-Authored-By or other AI attribution lines.
 - **Windows development:** psycopg's async mode needs a selector event loop. The CLI handles it (`core/runtime.py`), and tests that touch the async database use the `anyio_backend_options` fixture.
 
 ## Commands
