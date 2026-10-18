@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "key": "en:notice:v",
+  "language": "en",
+  "lemma": "notice",
+  "pos": "verb",
+  "kind": "word",
+  "cefr": "A2",
+  "pronunciations": [
+    { "variety": "en-US", "ipa": "ˈnoʊ.tɪs" },
+    { "variety": "en-GB", "ipa": "ˈnəʊ.tɪs" }
+  ],
+  "senses": [
+    {
+      "key": "en:notice:v#1",
+      "cefr": "A2",
+      "definition": "to see, hear or become aware of something",
+      "short_gloss": "see; become aware",
+      "patterns": ["notice sth", "notice (that) + clause"],
+      "l1": {
+        "es-419": {
+          "gloss": "ver, oír o percibir algo",
+          "equivalents": [
+            { "term": "notar", "match": "exact" },
+            { "term": "darse cuenta", "match": "near" },
+            { "term": "fijarse", "match": "near", "note": "fijarse en algo" }
+          ]
+        }
+      },
+      "examples": [
+        {
+          "key": "en:notice:v#1.ex1",
+          "text": "Did you notice anything strange about him?",
+          "cefr": "A2",
+          "translations": { "es-419": "¿Notaste algo raro en él?" }
+        },
+        {
+          "key": "en:notice:v#1.ex2",
+          "text": "I noticed that the door was open.",
+          "cefr": "A2",
+          "translations": { "es-419": "Me di cuenta de que la puerta estaba abierta." }
+        }
+      ]
+    }
+  ],
+  "related": [{ "type": "confusable", "key": "en:realize:v" }]
+}

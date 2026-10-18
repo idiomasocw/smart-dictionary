@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "key": "en:go:v",
+  "language": "en",
+  "lemma": "go",
+  "pos": "verb",
+  "kind": "word",
+  "cefr": "A1",
+  "pronunciations": [
+    { "variety": "en-US", "ipa": "goʊ" },
+    { "variety": "en-GB", "ipa": "gəʊ" }
+  ],
+  "irregular_forms": [
+    { "form": "went", "features": "V;PST" },
+    { "form": "gone", "features": "V;V.PTCP;PST" }
+  ],
+  "senses": [
+    {
+      "key": "en:go:v#1",
+      "cefr": "A1",
+      "definition": "to move or travel from one place to another",
+      "short_gloss": "move; travel",
+      "grammar": { "transitivity": "intransitive" },
+      "patterns": ["go to somewhere", "go home", "go by bus/car/train"],
+      "l1": {
+        "es-419": {
+          "gloss": "moverse o viajar de un lugar a otro",
+          "equivalents": [{ "term": "ir", "match": "exact" }]
+        }
+      },
+      "examples": [
+        {
+          "key": "en:go:v#1.ex1",
+          "text": "We went to the beach last weekend.",
+          "cefr": "A1",
+          "translations": { "es-419": "Fuimos a la playa el fin de semana pasado." }
+        },
+        {
+          "key": "en:go:v#1.ex2",
+          "text": "I usually go to work by bus.",
+          "cefr": "A1",
+          "translations": { "es-419": "Normalmente voy al trabajo en bus." }
+        }
+      ],
+      "notes": [
+        {
+          "key": "en:go:v#1.note1",
+          "kind": "common_mistake",
+          "l1": "es",
+          "text": "Se dice «go home», sin «to»: «I'm going home», no «I'm going to home».",
+          "see": []
+        }
+      ]
+    }
+  ]
+}

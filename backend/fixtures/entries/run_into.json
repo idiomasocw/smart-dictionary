@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "key": "en:run_into:phrv",
+  "language": "en",
+  "lemma": "run into",
+  "pos": "verb",
+  "kind": "phrasal_verb",
+  "cefr": "B1",
+  "pattern": { "tokens": [{ "lemma": "run" }, { "lemma": "into" }, { "slot": "sb" }] },
+  "senses": [
+    {
+      "key": "en:run_into:phrv#1",
+      "cefr": "B1",
+      "definition": "to meet someone you know without planning to",
+      "short_gloss": "meet by chance",
+      "registers": ["informal"],
+      "patterns": ["run into sb"],
+      "l1": {
+        "es-419": {
+          "gloss": "encontrarse con alguien por casualidad",
+          "equivalents": [
+            { "term": "encontrarse con", "match": "exact" },
+            { "term": "toparse con", "match": "near" }
+          ]
+        }
+      },
+      "examples": [
+        {
+          "key": "en:run_into:phrv#1.ex1",
+          "text": "I ran into my old teacher at the airport.",
+          "cefr": "B1",
+          "translations": { "es-419": "Me encontré con mi antigua profesora en el aeropuerto." }
+        },
+        {
+          "key": "en:run_into:phrv#1.ex2",
+          "text": "Guess who I ran into at the supermarket?",
+          "cefr": "B1",
+          "translations": { "es-419": "¿Adivina con quién me topé en el supermercado?" }
+        }
+      ]
+    }
+  ]
+}

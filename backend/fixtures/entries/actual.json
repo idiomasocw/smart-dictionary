@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "key": "en:actual:adj",
+  "language": "en",
+  "lemma": "actual",
+  "pos": "adjective",
+  "kind": "word",
+  "cefr": "B1",
+  "pronunciations": [
+    { "variety": "en-US", "ipa": "ˈæk.tʃu.əl" },
+    { "variety": "en-GB", "ipa": "ˈæk.tʃu.əl" }
+  ],
+  "senses": [
+    {
+      "key": "en:actual:adj#1",
+      "cefr": "B1",
+      "definition": "real, especially when compared with what was expected or believed",
+      "short_gloss": "real; true",
+      "l1": {
+        "es-419": {
+          "gloss": "real, sobre todo comparado con lo que se esperaba o se creía",
+          "equivalents": [
+            { "term": "real", "match": "exact" },
+            { "term": "verdadero", "match": "near" }
+          ]
+        }
+      },
+      "examples": [
+        {
+          "key": "en:actual:adj#1.ex1",
+          "text": "The actual cost was much higher than we expected.",
+          "cefr": "B1",
+          "translations": { "es-419": "El costo real fue mucho más alto de lo que esperábamos." }
+        },
+        {
+          "key": "en:actual:adj#1.ex2",
+          "text": "Is that his actual name or a nickname?",
+          "cefr": "B1",
+          "translations": { "es-419": "¿Ese es su nombre verdadero o un apodo?" }
+        }
+      ],
+      "notes": [
+        {
+          "key": "en:actual:adj#1.note1",
+          "kind": "false_friend",
+          "l1": "es",
+          "text": "«Actual» en inglés significa «real», no «actual». Para «actual» (de ahora) di «current».",
+          "see": ["en:current:adj"]
+        }
+      ]
+    }
+  ],
+  "related": [{ "type": "family", "key": "en:actually:adv" }]
+}

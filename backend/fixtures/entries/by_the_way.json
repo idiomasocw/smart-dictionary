@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "key": "en:by_the_way:phr",
+  "language": "en",
+  "lemma": "by the way",
+  "pos": "phrase",
+  "kind": "phrase",
+  "cefr": "A2",
+  "pattern": { "tokens": [{ "text": "by" }, { "text": "the" }, { "text": "way" }] },
+  "senses": [
+    {
+      "key": "en:by_the_way:phr#1",
+      "cefr": "A2",
+      "definition": "used to introduce a new subject or extra information in a conversation",
+      "short_gloss": "incidentally",
+      "registers": ["informal"],
+      "l1": {
+        "es-419": {
+          "gloss": "se usa para introducir un tema nuevo o un dato extra en una conversación",
+          "equivalents": [
+            { "term": "por cierto", "match": "exact" },
+            { "term": "a propósito", "match": "near" }
+          ]
+        }
+      },
+      "examples": [
+        {
+          "key": "en:by_the_way:phr#1.ex1",
+          "text": "By the way, have you seen my glasses?",
+          "cefr": "A2",
+          "translations": { "es-419": "Por cierto, ¿has visto mis gafas?" }
+        },
+        {
+          "key": "en:by_the_way:phr#1.ex2",
+          "text": "The meeting is at ten. By the way, it's in room 4 now.",
+          "cefr": "A2",
+          "translations": { "es-419": "La reunión es a las diez. Por cierto, ahora es en la sala 4." }
+        }
+      ]
+    }
+  ]
+}

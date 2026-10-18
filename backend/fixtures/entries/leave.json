@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "key": "en:leave:v",
+  "language": "en",
+  "lemma": "leave",
+  "pos": "verb",
+  "kind": "word",
+  "cefr": "A1",
+  "pronunciations": [
+    { "variety": "en-US", "ipa": "liv" },
+    { "variety": "en-GB", "ipa": "liːv" }
+  ],
+  "senses": [
+    {
+      "key": "en:leave:v#1",
+      "cefr": "A1",
+      "definition": "to go away from a person or place",
+      "short_gloss": "go away",
+      "grammar": { "transitivity": "both" },
+      "l1": {
+        "es-419": {
+          "gloss": "irse de un lugar o separarse de una persona",
+          "equivalents": [
+            { "term": "irse", "match": "exact" },
+            { "term": "salir", "match": "near" },
+            { "term": "marcharse", "match": "near" }
+          ]
+        }
+      },
+      "examples": [
+        {
+          "key": "en:leave:v#1.ex1",
+          "text": "Our train leaves at six in the morning.",
+          "cefr": "A1",
+          "translations": { "es-419": "Nuestro tren sale a las seis de la mañana." }
+        },
+        {
+          "key": "en:leave:v#1.ex2",
+          "text": "She left the office early to pick up her son.",
+          "cefr": "A2",
+          "translations": { "es-419": "Salió temprano de la oficina para recoger a su hijo." }
+        }
+      ]
+    },
+    {
+      "key": "en:leave:v#2",
+      "cefr": "A2",
+      "definition": "to put something somewhere and not take it with you",
+      "short_gloss": "let stay; forget",
+      "grammar": { "transitivity": "transitive" },
+      "patterns": ["leave sth somewhere"],
+      "l1": {
+        "es-419": {
+          "gloss": "dejar algo en un lugar, a propósito o por olvido",
+          "equivalents": [
+            { "term": "dejar", "match": "exact" },
+            { "term": "olvidar", "match": "approx", "note": "cuando es sin querer" }
+          ]
+        }
+      },
+      "examples": [
+        {
+          "key": "en:leave:v#2.ex1",
+          "text": "I think I left my phone in the taxi.",
+          "cefr": "A2",
+          "translations": { "es-419": "Creo que dejé mi teléfono en el taxi." }
+        },
+        {
+          "key": "en:leave:v#2.ex2",
+          "text": "You can leave your coat on the chair.",
+          "cefr": "A2",
+          "translations": { "es-419": "Puedes dejar tu abrigo en la silla." }
+        }
+      ]
+    }
+  ],
+  "related": [{ "type": "antonym", "key": "en:arrive:v" }]
+}

@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "key": "en:break_the_ice:idiom",
+  "language": "en",
+  "lemma": "break the ice",
+  "pos": "phrase",
+  "kind": "idiom",
+  "cefr": "B2",
+  "pattern": { "tokens": [{ "lemma": "break" }, { "text": "the" }, { "text": "ice" }] },
+  "senses": [
+    {
+      "key": "en:break_the_ice:idiom#1",
+      "cefr": "B2",
+      "definition": "to make people who have just met feel more relaxed, for example by starting a conversation",
+      "short_gloss": "make people relax",
+      "registers": ["informal"],
+      "l1": {
+        "es-419": {
+          "gloss": "hacer que personas que no se conocen se sientan más cómodas, por ejemplo empezando una conversación",
+          "equivalents": [{ "term": "romper el hielo", "match": "exact" }]
+        }
+      },
+      "examples": [
+        {
+          "key": "en:break_the_ice:idiom#1.ex1",
+          "text": "He told a joke to break the ice at the start of the meeting.",
+          "cefr": "B2",
+          "translations": { "es-419": "Contó un chiste para romper el hielo al comienzo de la reunión." }
+        },
+        {
+          "key": "en:break_the_ice:idiom#1.ex2",
+          "text": "A short game is a good way to break the ice with a new class.",
+          "cefr": "B2",
+          "translations": { "es-419": "Un juego corto es una buena forma de romper el hielo con un grupo nuevo." }
+        }
+      ]
+    }
+  ]
+}

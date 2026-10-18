@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "key": "en:realize:v",
+  "language": "en",
+  "lemma": "realize",
+  "pos": "verb",
+  "kind": "word",
+  "cefr": "B1",
+  "pronunciations": [
+    { "variety": "en-US", "ipa": "ˈri.ə.laɪz" },
+    { "variety": "en-GB", "ipa": "ˈrɪə.laɪz" }
+  ],
+  "variants": [{ "form": "realise", "regions": ["UK"] }],
+  "senses": [
+    {
+      "key": "en:realize:v#1",
+      "cefr": "B1",
+      "definition": "to understand or become aware of something that you did not know before",
+      "short_gloss": "understand suddenly",
+      "patterns": ["realize (that) + clause", "realize sth"],
+      "l1": {
+        "es-419": {
+          "gloss": "entender algo o tomar conciencia de algo que antes no se sabía",
+          "equivalents": [
+            { "term": "darse cuenta", "match": "exact", "note": "darse cuenta de algo" },
+            { "term": "caer en la cuenta", "match": "near" }
+          ]
+        }
+      },
+      "examples": [
+        {
+          "key": "en:realize:v#1.ex1",
+          "text": "I didn't realize it was so late.",
+          "cefr": "B1",
+          "translations": { "es-419": "No me di cuenta de que era tan tarde." }
+        },
+        {
+          "key": "en:realize:v#1.ex2",
+          "text": "She suddenly realized that she had left her keys at home.",
+          "cefr": "B1",
+          "translations": { "es-419": "De pronto se dio cuenta de que había dejado las llaves en casa." }
+        }
+      ],
+      "notes": [
+        {
+          "key": "en:realize:v#1.note1",
+          "kind": "false_friend",
+          "l1": "es",
+          "text": "«Realize» casi nunca significa «realizar». Para «realizar» (hacer) di «carry out» o «do».",
+          "see": []
+        }
+      ]
+    }
+  ],
+  "related": [{ "type": "confusable", "key": "en:notice:v" }]
+}

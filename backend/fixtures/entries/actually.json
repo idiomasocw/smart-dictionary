@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "key": "en:actually:adv",
+  "language": "en",
+  "lemma": "actually",
+  "pos": "adverb",
+  "kind": "word",
+  "cefr": "A2",
+  "pronunciations": [
+    { "variety": "en-US", "ipa": "ˈæk.tʃu.ə.li" },
+    { "variety": "en-GB", "ipa": "ˈæk.tʃu.ə.li" }
+  ],
+  "senses": [
+    {
+      "key": "en:actually:adv#1",
+      "cefr": "A2",
+      "definition": "used to say what is really true, especially when it is different from what someone thinks",
+      "short_gloss": "in fact; really",
+      "patterns": ["actually + verb", "Actually, + clause"],
+      "l1": {
+        "es-419": {
+          "gloss": "se usa para decir lo que es verdad, sobre todo cuando es distinto de lo que alguien cree",
+          "equivalents": [
+            { "term": "en realidad", "match": "exact" },
+            { "term": "de hecho", "match": "near" },
+            { "term": "la verdad es que", "match": "near" }
+          ]
+        },
+        "pt-BR": {
+          "gloss": "usado para dizer o que é verdade, principalmente quando é diferente do que alguém pensa",
+          "equivalents": [
+            { "term": "na verdade", "match": "exact" },
+            { "term": "na realidade", "match": "near" }
+          ]
+        }
+      },
+      "examples": [
+        {
+          "key": "en:actually:adv#1.ex1",
+          "text": "He looks young, but he's actually 45.",
+          "cefr": "A2",
+          "translations": {
+            "es-419": "Parece joven, pero en realidad tiene 45 años.",
+            "pt-BR": "Ele parece jovem, mas na verdade tem 45 anos."
+          }
+        },
+        {
+          "key": "en:actually:adv#1.ex2",
+          "text": "Actually, I don't agree with you.",
+          "cefr": "A2",
+          "translations": {
+            "es-419": "La verdad es que no estoy de acuerdo contigo.",
+            "pt-BR": "Na verdade, eu não concordo com você."
+          }
+        }
+      ],
+      "collocations": ["what actually happened", "actually quite good"],
+      "notes": [
+        {
+          "key": "en:actually:adv#1.note1",
+          "kind": "false_friend",
+          "l1": "es",
+          "text": "«Actually» no significa «actualmente». Para «actualmente» usa «currently» o «nowadays».",
+          "see": ["en:currently:adv"]
+        },
+        {
+          "key": "en:actually:adv#1.note2",
+          "kind": "false_friend",
+          "l1": "pt",
+          "text": "«Actually» não significa «atualmente». Para «atualmente», use «currently» ou «nowadays».",
+          "see": ["en:currently:adv"]
+        }
+      ]
+    }
+  ],
+  "related": [
+    { "type": "confusable", "key": "en:currently:adv" },
+    { "type": "family", "key": "en:actual:adj" }
+  ]
+}

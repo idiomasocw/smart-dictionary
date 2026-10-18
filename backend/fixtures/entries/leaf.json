@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "key": "en:leaf:n",
+  "language": "en",
+  "lemma": "leaf",
+  "pos": "noun",
+  "kind": "word",
+  "cefr": "A2",
+  "pronunciations": [
+    { "variety": "en-US", "ipa": "lif" },
+    { "variety": "en-GB", "ipa": "liːf" }
+  ],
+  "irregular_forms": [{ "form": "leaves", "features": "N;PL" }],
+  "senses": [
+    {
+      "key": "en:leaf:n#1",
+      "cefr": "A2",
+      "definition": "one of the flat green parts of a plant or tree that grow from its branches",
+      "short_gloss": "part of a plant",
+      "grammar": { "countability": "countable" },
+      "l1": {
+        "es-419": {
+          "gloss": "cada una de las partes planas y verdes que crecen en las ramas de una planta o un árbol",
+          "equivalents": [{ "term": "hoja", "match": "exact" }]
+        }
+      },
+      "examples": [
+        {
+          "key": "en:leaf:n#1.ex1",
+          "text": "In autumn the leaves turn red and yellow.",
+          "cefr": "A2",
+          "translations": { "es-419": "En otoño las hojas se ponen rojas y amarillas." }
+        },
+        {
+          "key": "en:leaf:n#1.ex2",
+          "text": "A single leaf fell onto the table.",
+          "cefr": "A2",
+          "translations": { "es-419": "Una sola hoja cayó sobre la mesa." }
+        }
+      ]
+    }
+  ]
+}

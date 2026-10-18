@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "key": "en:well-known:adj",
+  "language": "en",
+  "lemma": "well-known",
+  "pos": "adjective",
+  "kind": "word",
+  "cefr": "B1",
+  "pronunciations": [
+    { "variety": "en-US", "ipa": "ˌwɛlˈnoʊn" },
+    { "variety": "en-GB", "ipa": "ˌwelˈnəʊn" }
+  ],
+  "senses": [
+    {
+      "key": "en:well-known:adj#1",
+      "cefr": "B1",
+      "definition": "known about by a lot of people",
+      "short_gloss": "famous",
+      "l1": {
+        "es-419": {
+          "gloss": "que mucha gente conoce",
+          "equivalents": [
+            { "term": "conocido", "match": "exact" },
+            { "term": "famoso", "match": "near" }
+          ]
+        }
+      },
+      "examples": [
+        {
+          "key": "en:well-known:adj#1.ex1",
+          "text": "She is a well-known writer in her country.",
+          "cefr": "B1",
+          "translations": { "es-419": "Es una escritora conocida en su país." }
+        },
+        {
+          "key": "en:well-known:adj#1.ex2",
+          "text": "It's a well-known fact that smoking is bad for you.",
+          "cefr": "B1",
+          "translations": { "es-419": "Es un hecho conocido que fumar es malo para la salud." }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "key": "en:beautiful:adj",
+  "language": "en",
+  "lemma": "beautiful",
+  "pos": "adjective",
+  "kind": "word",
+  "cefr": "A1",
+  "pronunciations": [
+    { "variety": "en-US", "ipa": "ˈbju.tə.fəl" },
+    { "variety": "en-GB", "ipa": "ˈbjuː.tɪ.fəl" }
+  ],
+  "senses": [
+    {
+      "key": "en:beautiful:adj#1",
+      "cefr": "A1",
+      "definition": "very attractive or very pleasant to look at, listen to or experience",
+      "short_gloss": "very attractive",
+      "l1": {
+        "es-419": {
+          "gloss": "muy atractivo o muy agradable de ver, oír o vivir",
+          "equivalents": [
+            { "term": "hermoso", "match": "exact" },
+            { "term": "bonito", "match": "near" },
+            { "term": "lindo", "match": "near" }
+          ]
+        }
+      },
+      "examples": [
+        {
+          "key": "en:beautiful:adj#1.ex1",
+          "text": "What a beautiful view of the mountains!",
+          "cefr": "A1",
+          "translations": { "es-419": "¡Qué vista tan hermosa de las montañas!" }
+        },
+        {
+          "key": "en:beautiful:adj#1.ex2",
+          "text": "She sang a beautiful song at the wedding.",
+          "cefr": "A2",
+          "translations": { "es-419": "Cantó una canción preciosa en la boda." }
+        }
+      ]
+    }
+  ],
+  "related": [{ "type": "synonym", "key": "en:pretty:adj", "note": "pretty is less strong" }]
+}
