@@ -1,0 +1,750 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:smart-dictionary:entry:v1",
+  "$defs": {
+    "Equivalent": {
+      "additionalProperties": false,
+      "properties": {
+        "term": {
+          "title": "Term",
+          "type": "string"
+        },
+        "match": {
+          "enum": [
+            "exact",
+            "near",
+            "approx",
+            "paraphrase"
+          ],
+          "title": "Match",
+          "type": "string"
+        },
+        "regions": {
+          "description": "ISO 3166-1 alpha-2 codes where the term is regional; empty means neutral",
+          "items": {
+            "type": "string"
+          },
+          "title": "Regions",
+          "type": "array"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        }
+      },
+      "required": [
+        "term",
+        "match"
+      ],
+      "title": "Equivalent",
+      "type": "object"
+    },
+    "Example": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "cefr": {
+          "anyOf": [
+            {
+              "enum": [
+                "A1",
+                "A2",
+                "B1",
+                "B2",
+                "C1",
+                "C2"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cefr"
+        },
+        "translations": {
+          "$ref": "#/$defs/Translations"
+        }
+      },
+      "required": [
+        "key",
+        "text",
+        "translations"
+      ],
+      "title": "Example",
+      "type": "object"
+    },
+    "Grammar": {
+      "additionalProperties": false,
+      "properties": {
+        "countability": {
+          "anyOf": [
+            {
+              "enum": [
+                "countable",
+                "uncountable",
+                "both"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Countability"
+        },
+        "transitivity": {
+          "anyOf": [
+            {
+              "enum": [
+                "transitive",
+                "intransitive",
+                "both"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transitivity"
+        }
+      },
+      "title": "Grammar",
+      "type": "object"
+    },
+    "IrregularForm": {
+      "additionalProperties": false,
+      "properties": {
+        "form": {
+          "title": "Form",
+          "type": "string"
+        },
+        "features": {
+          "description": "UniMorph-style features, e.g. 'V;PST' or 'N;PL'",
+          "title": "Features",
+          "type": "string"
+        }
+      },
+      "required": [
+        "form",
+        "features"
+      ],
+      "title": "IrregularForm",
+      "type": "object"
+    },
+    "L1Layer": {
+      "additionalProperties": false,
+      "properties": {
+        "gloss": {
+          "title": "Gloss",
+          "type": "string"
+        },
+        "equivalents": {
+          "items": {
+            "$ref": "#/$defs/Equivalent"
+          },
+          "title": "Equivalents",
+          "type": "array"
+        }
+      },
+      "required": [
+        "gloss",
+        "equivalents"
+      ],
+      "title": "L1Layer",
+      "type": "object"
+    },
+    "L1Layers": {
+      "additionalProperties": false,
+      "description": "One layer per student language: es-419 is required in v1; pt-BR and ar come later.",
+      "properties": {
+        "es-419": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/L1Layer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pt-BR": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/L1Layer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "ar": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/L1Layer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "L1Layers",
+      "type": "object"
+    },
+    "LemmaToken": {
+      "additionalProperties": false,
+      "properties": {
+        "lemma": {
+          "title": "Lemma",
+          "type": "string"
+        }
+      },
+      "required": [
+        "lemma"
+      ],
+      "title": "LemmaToken",
+      "type": "object"
+    },
+    "Note": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "false_friend",
+            "common_mistake",
+            "pronunciation",
+            "grammar",
+            "usage",
+            "culture"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "l1": {
+          "anyOf": [
+            {
+              "enum": [
+                "es",
+                "pt",
+                "ar"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Student language the note is for; null means everyone",
+          "title": "L1"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "see": {
+          "items": {
+            "type": "string"
+          },
+          "title": "See",
+          "type": "array"
+        }
+      },
+      "required": [
+        "key",
+        "kind",
+        "text"
+      ],
+      "title": "Note",
+      "type": "object"
+    },
+    "Pattern": {
+      "additionalProperties": false,
+      "properties": {
+        "tokens": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/LemmaToken"
+              },
+              {
+                "$ref": "#/$defs/TextToken"
+              },
+              {
+                "$ref": "#/$defs/SlotToken"
+              }
+            ]
+          },
+          "title": "Tokens",
+          "type": "array"
+        },
+        "separable": {
+          "default": false,
+          "title": "Separable",
+          "type": "boolean"
+        },
+        "max_gap": {
+          "default": 0,
+          "title": "Max Gap",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tokens"
+      ],
+      "title": "Pattern",
+      "type": "object"
+    },
+    "Pronunciation": {
+      "additionalProperties": false,
+      "properties": {
+        "variety": {
+          "enum": [
+            "en-US",
+            "en-GB"
+          ],
+          "title": "Variety",
+          "type": "string"
+        },
+        "ipa": {
+          "title": "Ipa",
+          "type": "string"
+        },
+        "sense_keys": {
+          "description": "Only for homographs pronounced differently per sense",
+          "items": {
+            "type": "string"
+          },
+          "title": "Sense Keys",
+          "type": "array"
+        }
+      },
+      "required": [
+        "variety",
+        "ipa"
+      ],
+      "title": "Pronunciation",
+      "type": "object"
+    },
+    "Related": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "synonym",
+            "antonym",
+            "family",
+            "confusable",
+            "see_also"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        }
+      },
+      "required": [
+        "type",
+        "key"
+      ],
+      "title": "Related",
+      "type": "object"
+    },
+    "Sense": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "cefr": {
+          "enum": [
+            "A1",
+            "A2",
+            "B1",
+            "B2",
+            "C1",
+            "C2"
+          ],
+          "title": "Cefr",
+          "type": "string"
+        },
+        "definition": {
+          "title": "Definition",
+          "type": "string"
+        },
+        "short_gloss": {
+          "title": "Short Gloss",
+          "type": "string"
+        },
+        "registers": {
+          "items": {
+            "enum": [
+              "formal",
+              "informal",
+              "slang",
+              "offensive",
+              "literary",
+              "old-fashioned",
+              "technical"
+            ],
+            "type": "string"
+          },
+          "title": "Registers",
+          "type": "array"
+        },
+        "domains": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Domains",
+          "type": "array"
+        },
+        "regions": {
+          "items": {
+            "enum": [
+              "US",
+              "UK",
+              "AU",
+              "CA",
+              "IE",
+              "NZ"
+            ],
+            "type": "string"
+          },
+          "title": "Regions",
+          "type": "array"
+        },
+        "patterns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Patterns",
+          "type": "array"
+        },
+        "grammar": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Grammar"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "l1": {
+          "$ref": "#/$defs/L1Layers"
+        },
+        "examples": {
+          "items": {
+            "$ref": "#/$defs/Example"
+          },
+          "title": "Examples",
+          "type": "array"
+        },
+        "collocations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Collocations",
+          "type": "array"
+        },
+        "notes": {
+          "items": {
+            "$ref": "#/$defs/Note"
+          },
+          "title": "Notes",
+          "type": "array"
+        },
+        "retired": {
+          "default": false,
+          "title": "Retired",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key",
+        "cefr",
+        "definition",
+        "short_gloss",
+        "l1",
+        "examples"
+      ],
+      "title": "Sense",
+      "type": "object"
+    },
+    "SlotToken": {
+      "additionalProperties": false,
+      "properties": {
+        "slot": {
+          "enum": [
+            "sb",
+            "sth",
+            "sb/sth",
+            "one's",
+            "doing sth"
+          ],
+          "title": "Slot",
+          "type": "string"
+        }
+      },
+      "required": [
+        "slot"
+      ],
+      "title": "SlotToken",
+      "type": "object"
+    },
+    "TextToken": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "TextToken",
+      "type": "object"
+    },
+    "Translations": {
+      "additionalProperties": false,
+      "properties": {
+        "es-419": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Es-419"
+        },
+        "pt-BR": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pt-Br"
+        },
+        "ar": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ar"
+        }
+      },
+      "title": "Translations",
+      "type": "object"
+    },
+    "Variant": {
+      "additionalProperties": false,
+      "properties": {
+        "form": {
+          "description": "Spelling variant, e.g. 'colour'",
+          "title": "Form",
+          "type": "string"
+        },
+        "regions": {
+          "items": {
+            "enum": [
+              "US",
+              "UK",
+              "AU",
+              "CA",
+              "IE",
+              "NZ"
+            ],
+            "type": "string"
+          },
+          "title": "Regions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "form"
+      ],
+      "title": "Variant",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "key": {
+      "title": "Key",
+      "type": "string"
+    },
+    "language": {
+      "const": "en",
+      "title": "Language",
+      "type": "string"
+    },
+    "lemma": {
+      "title": "Lemma",
+      "type": "string"
+    },
+    "pos": {
+      "enum": [
+        "noun",
+        "verb",
+        "adjective",
+        "adverb",
+        "pronoun",
+        "determiner",
+        "preposition",
+        "conjunction",
+        "interjection",
+        "numeral",
+        "phrase"
+      ],
+      "title": "Pos",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "word",
+        "phrasal_verb",
+        "idiom",
+        "phrase"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "cefr": {
+      "enum": [
+        "A1",
+        "A2",
+        "B1",
+        "B2",
+        "C1",
+        "C2"
+      ],
+      "title": "Cefr",
+      "type": "string"
+    },
+    "pronunciations": {
+      "items": {
+        "$ref": "#/$defs/Pronunciation"
+      },
+      "title": "Pronunciations",
+      "type": "array"
+    },
+    "variants": {
+      "items": {
+        "$ref": "#/$defs/Variant"
+      },
+      "title": "Variants",
+      "type": "array"
+    },
+    "irregular_forms": {
+      "items": {
+        "$ref": "#/$defs/IrregularForm"
+      },
+      "title": "Irregular Forms",
+      "type": "array"
+    },
+    "pattern": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Pattern"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "senses": {
+      "items": {
+        "$ref": "#/$defs/Sense"
+      },
+      "title": "Senses",
+      "type": "array"
+    },
+    "related": {
+      "items": {
+        "$ref": "#/$defs/Related"
+      },
+      "title": "Related",
+      "type": "array"
+    },
+    "provisional": {
+      "default": false,
+      "title": "Provisional",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schema_version",
+    "key",
+    "language",
+    "lemma",
+    "pos",
+    "kind",
+    "cefr",
+    "senses"
+  ],
+  "title": "EntryDoc",
+  "type": "object"
+}
