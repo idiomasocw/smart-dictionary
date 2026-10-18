@@ -12,6 +12,9 @@ on:
       - "backend/**"
       - "factory/schema/**"
       - ".github/workflows/backend-ci.yml"
+  # Manual runs (Actions tab or `gh workflow run`), e.g. after a history rewrite:
+  # its diff is empty, so the path filters above never start a run.
+  workflow_dispatch:
 
 permissions:
   contents: read
