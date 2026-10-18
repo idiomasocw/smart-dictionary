@@ -30,7 +30,9 @@ Register = Literal["formal", "informal", "slang", "offensive", "literary", "old-
                    "technical"]  # fmt: skip
 NoteKind = Literal["false_friend", "common_mistake", "pronunciation", "grammar", "usage", "culture"]
 RelationType = Literal["synonym", "antonym", "family", "confusable", "see_also"]
-Slot = Literal["sb", "sth", "sb/sth", "one's", "doing sth"]
+# Open positions in a multiword pattern. "one's" and "oneself" refer back to the subject
+# (keep one's word, kick oneself); "sb's" is someone else's (pull sb's leg).
+Slot = Literal["sb", "sth", "sb/sth", "sb's", "one's", "oneself", "somewhere", "doing sth"]
 
 # Multiword kinds and the part of speech each must carry.
 KIND_POS: dict[str, str] = {"phrasal_verb": "verb", "idiom": "phrase", "phrase": "phrase"}

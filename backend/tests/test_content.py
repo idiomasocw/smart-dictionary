@@ -5,7 +5,7 @@ import pytest
 
 from smart_dictionary.content.projections import english_forms
 from smart_dictionary.content.publish import load_fixtures, publish
-from smart_dictionary.core.entrydoc import EntryDoc
+from smart_dictionary.core.entrydoc import EntryDoc, Variant
 from smart_dictionary.db.sync import connect
 from smart_dictionary.paths import FIXTURES_DIR
 
@@ -30,11 +30,23 @@ def test_fixtures_are_valid_entry_documents(path: Path):
         ("leave", {"leave", "leaves", "left", "leaving"}),
         ("run_into", {"run into", "ran into", "runs into", "running into"}),
         ("well-known", {"well-known", "well known"}),
-        ("realize", {"realize", "realizes", "realized", "realise"}),
+        ("realize", {"realize", "realizes", "realized", "realise", "realised", "realising"}),
     ],
 )
 def test_english_forms(name, expected):
     assert expected <= set(english_forms(fixture(name)))
+
+
+def test_spelling_variants_are_inflected_in_their_own_spelling():
+    color = fixture("leaf").model_copy(
+        update={"lemma": "color", "variants": [Variant(form="colour", regions=["UK"])]}
+    )
+    assert {"color", "colors", "colour", "colours"} <= set(english_forms(color))
+
+    hark_back = fixture("run_into").model_copy(
+        update={"lemma": "hark back", "variants": [Variant(form="harken back")]}
+    )
+    assert {"harked back", "harkened back", "harkens back"} <= set(english_forms(hark_back))
 
 
 def test_publishing_builds_the_projections(migrated_database_url):

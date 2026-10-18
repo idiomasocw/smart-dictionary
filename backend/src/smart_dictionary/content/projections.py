@@ -29,20 +29,26 @@ def english_forms(doc: EntryDoc) -> dict[str, Form]:
         for variant in spacing_variants(form):
             forms.setdefault(variant, (form, features, source))
 
+    def inflect(lemma: str) -> None:
+        if doc.kind == "word" and doc.pos in UPOS and " " not in lemma:
+            for tag, values in getAllInflections(lemma, upos=UPOS[doc.pos]).items():
+                for value in values:
+                    add(value, tag, "lemminflect")
+        elif doc.kind == "phrasal_verb":
+            head, _, rest = lemma.partition(" ")
+            for tag, values in getAllInflections(head, upos="VERB").items():
+                for value in values:
+                    add(f"{value} {rest}", tag, "lemminflect")
+
     add(doc.lemma, None, "doc")
     for variant in doc.variants:
         add(variant.form, None, "variant")
     for irregular in doc.irregular_forms:
         add(irregular.form, irregular.features, "doc")
-    if doc.kind == "word" and doc.pos in UPOS and " " not in doc.lemma:
-        for tag, values in getAllInflections(doc.lemma, upos=UPOS[doc.pos]).items():
-            for value in values:
-                add(value, tag, "lemminflect")
-    elif doc.kind == "phrasal_verb":
-        head, _, rest = doc.lemma.partition(" ")
-        for tag, values in getAllInflections(head, upos="VERB").items():
-            for value in values:
-                add(f"{value} {rest}", tag, "lemminflect")
+    inflect(doc.lemma)
+    # A spelling variant inflects in its own spelling: realise -> realised, colour -> colours.
+    for variant in doc.variants:
+        inflect(variant.form)
     return forms
 
 

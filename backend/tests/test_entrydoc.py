@@ -164,6 +164,31 @@ def test_multiword_entries_need_a_pattern_and_matching_pos():
         EntryDoc.model_validate(broken(RUN_INTO, lambda d: d.update(pos="phrase")))
 
 
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        [{"lemma": "pull"}, {"slot": "sb's"}, {"text": "leg"}],
+        [{"lemma": "kick"}, {"slot": "oneself"}],
+        [
+            {"lemma": "pack"},
+            {"slot": "sb"},
+            {"lemma": "off"},
+            {"text": "to"},
+            {"slot": "somewhere"},
+        ],
+    ],
+)
+def test_idiom_slots(tokens):
+    EntryDoc.model_validate(broken(RUN_INTO, lambda d: d["pattern"].update(tokens=tokens)))
+
+
+def test_unknown_slots_are_rejected():
+    with pytest.raises(ValidationError):
+        EntryDoc.model_validate(
+            broken(RUN_INTO, lambda d: d["pattern"].update(tokens=[{"slot": "smb"}]))
+        )
+
+
 def test_schema_file_is_current():
     assert SCHEMA_PATH.read_text(encoding="utf-8") == schema_text(), (
         "run `uv run smart-dictionary schema export` and commit factory/schema/entry.v1.json"
