@@ -1062,7 +1062,7 @@ volumes: { caddy_data: {} }
 ### 11.6 Secrets
 - **On the EC2:** secrets live in **SSM Parameter Store** as SecureStrings. At each deploy the instance role reads them and writes one env file per path (mode 600):
   - `/smart-dictionary/prod/app/` for the API:
-    - `DATABASE_URL`, as `dictionary_app` through the session pooler. That role reads and writes rows but can't change the schema (revision 0005). The pooler is IPv4, which Docker's default network supports; the direct connection is IPv6 only.
+    - `DATABASE_URL`, as `dictionary_app` through the session pooler. That role reads and writes rows but can't change the schema (revision 0005). It bypasses the row-level security that hosted Supabase turns on for every table (revision 0006); RLS stays on as the guard against Supabase's Data API roles, which this project doesn't use. The pooler is IPv4, which Docker's default network supports; the direct connection is IPv6 only.
     - `BBB_PROXY_SECRET`;
     - later the Anthropic, DeepSeek and Groq keys (separate from the LMS's, for cost attribution and revocation) and `DICTIONARY_SERVICE_TOKEN`.
   - `/smart-dictionary/prod/migrate/` holds the owner's `DATABASE_URL`, which only the one-off migration container gets.

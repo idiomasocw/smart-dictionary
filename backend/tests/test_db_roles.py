@@ -21,11 +21,17 @@ def test_app_url_keeps_the_host_and_the_pooler_project():
 def test_app_role_reads_and_writes_rows_but_never_the_schema(migrated_database_url):
     with connect() as conn:
         url = roles.reset_password(conn, migrated_database_url)
+        # Hosted Supabase turns on row-level security for every new table (its ensure_rls
+        # event trigger), with no policies; the local stack doesn't, so do it here.
+        for table in ("tenants", "entries", "misses", "lookups"):
+            conn.execute(f"alter table {table} enable row level security")  # pyright: ignore[reportArgumentType]
     roles.check_login(url, "dictionary_app")
     app_url = url.replace("postgresql+psycopg://", "postgresql://", 1)
 
     with psycopg.connect(app_url, autocommit=True) as app:
         assert app.execute("select current_user").fetchone() == ("dictionary_app",)
+        # Under RLS without policies, a role that doesn't bypass it would see no rows here.
+        assert app.execute("select id from tenants").fetchall() == [("ocw",)]
         assert app.execute("select count(*) from entries").fetchone() == (0,)
         # What the lookup path writes, through an identity column and a partitioned table.
         app.execute(

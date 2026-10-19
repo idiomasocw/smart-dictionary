@@ -16,6 +16,7 @@ An English learner's dictionary for OneCulture World. Entries are pre-populated 
 - **Migrations:** Alembic revisions written as plain SQL (no autogenerate), one revision per change, always with a downgrade. `tests/test_migrations.py` applies and rolls back everything on a scratch database.
 - **IDs:** row IDs are UUIDv7 from `core/ids.py`. The hosted database is Postgres 17, which has no `uuidv7()`.
 - **Extensions** live in the `extensions` schema, so schema-qualify their types and operator classes in DDL (`extensions.halfvec`, `extensions.gin_trgm_ops`).
+- **Row-level security:** hosted Supabase turns RLS on for every new table in `public` (its `ensure_rls` event trigger), and the local stack doesn't. The API's role `dictionary_app` bypasses RLS (revision 0006), so new tables need no policies. Never rely on RLS for authorization here.
 - **Content keys** (entries, senses, examples) are stable forever: never reuse or renumber them.
 - **The LMS integrates through HTTP contracts only** (05 §6). Never read LMS tables, and never store student names, emails or phones.
 - **No LLM in the lookup path.** Request-time AI goes through the gateway, with its $5/month cap.
