@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     # A submitted entry publishes when it has no errors and scores at least this (design
     # §6.4); calibrated on the golden set in the pilot.
     factory_publish_threshold: float = Field(default=0.7, ge=0, le=1)
+    # Request-time AI (design §7). A provider without a key is skipped, and with no key at
+    # all the AI features answer "unavailable"; lookups never depend on them.
+    anthropic_api_key: SecretStr | None = None
+    deepseek_api_key: SecretStr | None = None
+    groq_api_key: SecretStr | None = None
+    # The monthly cap on paid providers [OP-2]: an alert at 80%, and at 100% only the free
+    # provider answers until the month rolls over.
+    ai_monthly_budget_usd: float = Field(default=5.0, ge=0)
 
     @field_validator("database_url")
     @classmethod

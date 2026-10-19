@@ -14,6 +14,7 @@ dependencies = [
     "alembic>=1.14",
     "uuid-utils>=0.9",
     "lemminflect>=0.2.3",
+    "anthropic>=1.15",
 ]
 
 [project.scripts]
