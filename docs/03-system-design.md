@@ -661,7 +661,7 @@ You asked whether there's a better way to reach 20k than your own lists. My answ
 - **Homographs** are numbered as entry keys are (*pole*, *Pole* → `en:pole:n~2`).
 - **Not yet:** the step-5 filters and the curation run (step 7).
 
-A re-run replaces the undecided candidates and keeps the decided ones. Seed candidates and their variants join the Wiktionary keep set, so the full order is `seeds import`, `data import kaikki-en`, then `seeds import` again.
+A re-run replaces the undecided candidates and keeps the decided ones. Seed candidates and their variants join the Wiktionary keep set, and the builder reads Wiktionary, so a new database needs `data import --all`, `seeds import`, `data import kaikki-en`, then `seeds import` again. Starting with `seeds import` leaves a few rows out: with no Wiktionary rows, the first build folds some list words into others (*chiselled* into *chisel*).
 
 **Target mix (to tune with your lists):** ~14k words, ~3k phrasal verbs, ~2k idioms, ~1k collocations and fixed phrases.
 
