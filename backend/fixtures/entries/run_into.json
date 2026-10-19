@@ -6,7 +6,7 @@
   "pos": "verb",
   "kind": "phrasal_verb",
   "cefr": "B1",
-  "pattern": { "tokens": [{ "lemma": "run" }, { "lemma": "into" }, { "slot": "sb" }] },
+  "pattern": { "tokens": [{ "lemma": "run" }, { "text": "into" }, { "slot": "sb" }] },
   "senses": [
     {
       "key": "en:run_into:phrv#1",

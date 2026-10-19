@@ -76,7 +76,7 @@ The order of v2–v5 is negotiable in the roadmap.
 |---|---|
 | EC-1 | **Header:** headword, POS, kind (word, phrasal verb, idiom, collocation…), CEFR (for the entry and for each sense), frequency band (top 1k / 3k / 5k / 10k / 20k), US and UK IPA with audio, inflections |
 | EC-2 | **Senses:** learner definition in simple English; short gloss; L1 gloss; L1 equivalents (ranked, with match type, and region tags when they aren't es-419); register, region and domain labels; grammar patterns |
-| EC-3 | **Examples:** 3 per sense (at least 2 for rare senses), each with an L1 translation and US audio, and the headword highlighted |
+| EC-3 | **Examples:** 2–3 per sense (3 when a sense has several common patterns or contexts), each with an L1 translation and US audio, and the headword highlighted |
 | EC-4 | **Collocations** (up to ~6 per sense) and common patterns |
 | EC-5 | **L1 notes:** false friends, typical mistakes for that L1, pronunciation tips, only where genuinely useful |
 | EC-6 | **Related:** synonyms and antonyms (with nuance), word family, confusables ("see also *currently*") |
@@ -167,7 +167,7 @@ An entry is one **lemma + part of speech** (*run* the verb and *run* the noun ar
 - **Senses:** only learner-relevant ones, ordered by frequency. At most 4 for most words; up to 6 for very polysemous A1–B1 verbs (*get*, *make*, *take*).
 - **Definitions:** simple English from a ~2,000–3,000-word defining vocabulary, ≤ 20 words, never using the headword itself, one idea per sense.
 - **Examples:**
-  - 3 per sense, 6–16 words each, showing the typical pattern.
+  - 2–3 per sense, 6–16 words each, showing the typical pattern.
   - Natural adult contexts (work, study, travel, family, health); names and settings that include Latin America, Brazil and the Arab world.
   - **Suitable for ages 16+.**
 - **L1 (es-419):**
