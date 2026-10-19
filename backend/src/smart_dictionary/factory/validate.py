@@ -35,6 +35,12 @@ DEFINING_LISTS = ["ngsl", "ngsl-sup", "ngsl-spoken"]
 MIN_DEFINING_SHARE = 0.85
 MIN_SPANISH_SHARE = 0.8
 MIN_SPANISH_WORDS = 3
+# V5: a word votes English only when it's over ten times as common in English (Zipf is a
+# log10 scale). Closer than that it's shared, like hotel, local, plan or real, and doesn't
+# vote. Neither do a few everyday Spanish words even more common in English: ¿has visto?,
+# Diego come, once, date prisa, que use.
+ENGLISH_MARGIN = 1.0
+SHARED_WORDS = frozenset({"come", "date", "has", "once", "use"})
 MAX_UNKNOWN_EQUIVALENT_WORDS = 2
 MAX_IPA_DISTANCE = 0.35
 MIN_DUPLICATE_OVERLAP = 0.8
@@ -247,10 +253,12 @@ def _headword_in_examples(doc: EntryDoc) -> Iterator[Issue]:
             continue
         for example in sense.examples:
             tokens = _english_tokens(example.text)
-            found = (
-                _matches(tokens, doc.pattern)
+            # A possessive shows its word too: the company's profits.
+            found = any(
+                _matches(words, doc.pattern)
                 if doc.pattern
-                else any(gram in forms for gram in _grams(tokens))
+                else any(gram in forms for gram in _grams(words))
+                for words in (tokens, _without_possessives(tokens))
             )
             if not found:
                 yield Issue("V3", "error", example.key, "no form of the headword in the example")
@@ -304,10 +312,11 @@ def _definitions(doc: EntryDoc, context: Context) -> Iterator[Issue]:
         if sense.retired:
             continue
         tokens = _english_tokens(sense.definition)
-        if any(gram in forms for gram in _grams(tokens)):
+        bare = _without_possessives(tokens)  # someone's is as basic as someone
+        if any(gram in forms for words in (tokens, bare) for gram in _grams(words)):
             yield Issue("V4", "error", sense.key, "the definition uses the headword")
-        if tokens and context.vocab:
-            share = sum(_defining(token, context.vocab) for token in tokens) / len(tokens)
+        if bare and context.vocab:
+            share = sum(_defining(token, context.vocab) for token in bare) / len(bare)
             if share < MIN_DEFINING_SHARE:
                 yield Issue(
                     "V4", "warn", sense.key, f"{share:.0%} of the words are basic; aim for 85%"
@@ -342,14 +351,20 @@ def _spanish(doc: EntryDoc, context: Context) -> Iterator[Issue]:
 
 
 def _spanish_share(tokens: list[str], context: Context) -> float | None:
-    """The share of words that vote Spanish: at least as frequent in Spanish as in English.
-    Words neither language knows (names, typos) don't vote; None when too few do."""
+    """The share of voting words that vote Spanish. A word votes Spanish when it's at least
+    as frequent in Spanish as in English, and English when its English Zipf is more than
+    ENGLISH_MARGIN higher. Shared words, and words neither language knows (names, typos),
+    don't vote; None when too few do."""
     votes = []
     for token in tokens:
         spanish = context.zipf.get(("es", token), 0.0)
         english = context.zipf.get(("en", token), 0.0)
-        if spanish or english:
-            votes.append(spanish >= english)
+        if token in SHARED_WORDS or not (spanish or english):
+            continue
+        if spanish >= english:
+            votes.append(True)
+        elif english - spanish > ENGLISH_MARGIN:
+            votes.append(False)
     if len(votes) < MIN_SPANISH_WORDS:
         return None
     return sum(votes) / len(votes)
@@ -485,6 +500,12 @@ def _words(text: str) -> list[str]:
 
 def _english_tokens(text: str) -> list[str]:
     return [norm(word) for word in _words(text)]
+
+
+def _without_possessives(tokens: list[str]) -> list[str]:
+    """someone's -> someone. Kept apart from the tokens, because a multiword headword can hold
+    a possessive itself (at arm's length)."""
+    return [token.removesuffix("'s") for token in tokens]
 
 
 def _grams(tokens: list[str], longest: int = 3) -> Iterator[str]:

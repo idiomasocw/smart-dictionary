@@ -1,5 +1,6 @@
 """The factory's checks (design §6.4), one change at a time to a correct entry."""
 
+from dataclasses import replace
 from typing import Any
 
 from factory_docs import DEFINING_WORDS, GO_DOC, GO_GLOSS, SPANISH_WORDS, go_doc
@@ -80,6 +81,13 @@ def test_v3_phrasal_verbs_match_when_split():
     assert found(doc, turn_off)["V3"] == {"error"}
 
 
+def test_v3_a_possessive_shows_the_headword():
+    doc = go_doc()
+    # "the company's profits" for company; go's the only headword here.
+    sense(doc)["examples"][0]["text"] = "Go's rules are simple, but the game takes years."
+    assert "V3" not in found(doc)
+
+
 def test_v4_definitions():
     doc = go_doc()
     sense(doc)["definition"] = "to go from one place to another"
@@ -88,12 +96,36 @@ def test_v4_definitions():
     assert found(doc) == {"V4": {"warn"}}
     sense(doc)["definition"] = " ".join(["to move or travel from one place to another"] * 3)
     assert "error" in found(doc)["V4"]
+    # A possessive is as basic as its word.
+    sense(doc)["definition"] = "to move from one's place to another's"
+    assert "V4" not in found(doc)
 
 
 def test_v5_spanish_text_reads_as_spanish():
     doc = go_doc()
     sense(doc)["l1"]["es-419"]["gloss"] = "to move or travel from one place to another"
     assert found(doc) == {"V5": {"error"}}
+
+
+def test_v5_spanish_words_that_english_shares_still_read_as_spanish():
+    # Real (es, en) Zipf: has is everyday Spanish but more common in English, bar and hotel
+    # are shared, and the, is and very are English, though Spanish web text has them too.
+    zipf = {"has": (5.17, 6.37), "comido": (4.5, 0), "bar": (4.53, 4.94),
+            "hotel": (4.80, 4.95), "del": (7.01, 4.32), "the": (5.42, 7.73),
+            "is": (4.49, 7.07), "very": (3.5, 6.5)}  # fmt: skip
+    extra = {
+        (language, word): value
+        for word, pair in zipf.items()
+        for language, value in zip(("es", "en"), pair, strict=True)
+        if value
+    }
+    context = replace(CONTEXT, zipf=CONTEXT.zipf | extra)
+    doc = go_doc()
+    translations = sense(doc)["examples"][1]["translations"]
+    translations["es-419"] = "¿Has comido en el bar del hotel?"
+    assert validate(GO, doc, context) == []
+    translations["es-419"] = "The hotel is very good."
+    assert {issue.check for issue in validate(GO, doc, context)} == {"V5"}
 
 
 def test_v6_equivalents_are_real_spanish():
