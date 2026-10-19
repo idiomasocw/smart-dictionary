@@ -236,7 +236,12 @@ docker compose logs --tail 100 --follow api
 cat current-image
 ```
 
-**Secrets and AI keys.** Each deploy copies every parameter under `/smart-dictionary/prod/app/` into the API's environment. The AI features (Phase 5) read `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY` and `GROQ_API_KEY` from there. Store each key like this, then deploy:
+**Secrets and AI keys.** Each deploy copies every parameter under `/smart-dictionary/prod/app/` into the API's environment. The AI features read `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY` and `GROQ_API_KEY` from there; today that's the missing-word entries (design §6.5).
+- **Each provider is optional.** One without a key is skipped, and with no key at all a missing word just isn't generated; lookups never depend on AI.
+- **Anthropic alone is enough to start.** DeepSeek and Groq are fallbacks for when it's down or the month's $5 is spent.
+- **The cap is `AI_MONTHLY_BUDGET_USD`,** 5 by default; store that parameter only to change it.
+
+Store each key like this, then deploy:
 
 ```bash
 read -rsp "Anthropic API key: " KEY && echo && MSYS_NO_PATHCONV=1 aws ssm put-parameter --region us-east-2 --type SecureString --name /smart-dictionary/prod/app/ANTHROPIC_API_KEY --value "$KEY"; unset KEY

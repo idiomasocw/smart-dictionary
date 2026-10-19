@@ -3,9 +3,12 @@
 import time
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from pydantic import BaseModel
 
+from smart_dictionary.ai import provisional
+from smart_dictionary.ai.gateway import Gateway, get_gateway
+from smart_dictionary.ai.provisional import ProvisionalStatus
 from smart_dictionary.api.auth import CurrentPrincipal
 from smart_dictionary.api.deps import Connection
 from smart_dictionary.api.errors import ApiError
@@ -30,6 +33,8 @@ class LookupResponse(BaseModel):
     query: QueryEcho
     groups: list[LookupGroup]
     did_you_mean: list[Suggestion]
+    # Only when nothing matched: whether a provisional entry is on its way [LK-10].
+    provisional: ProvisionalStatus | None = None
 
 
 class SuggestResponse(BaseModel):
@@ -42,6 +47,8 @@ async def lookup(
     conn: Connection,
     principal: CurrentPrincipal,
     settings: Annotated[Settings, Depends(get_settings)],
+    gateway: Annotated[Gateway, Depends(get_gateway)],
+    background: BackgroundTasks,
     q: QueryText,
     direction: DirectionParam = "auto",
     variety: L1Variety | None = None,
@@ -49,9 +56,17 @@ async def lookup(
     started = time.perf_counter()
     query = _query(q, direction, variety or settings.default_variety)
     groups, did_you_mean = await service.lookup(conn, query)
+    status = None
+    if not groups:
+        # Decided with SQL only; any AI work runs after the response (NF-1).
+        status, job = await provisional.on_miss(conn, principal, query, gateway)
+        if job is not None:
+            background.add_task(provisional.generate, job, gateway)
     latency_ms = round((time.perf_counter() - started) * 1000)
     await service.log_lookup(conn, principal, query, groups, did_you_mean, latency_ms)
-    return LookupResponse(query=_echo(query), groups=groups, did_you_mean=did_you_mean)
+    return LookupResponse(
+        query=_echo(query), groups=groups, did_you_mean=did_you_mean, provisional=status
+    )
 
 
 @router.get("/suggest", response_model=SuggestResponse)

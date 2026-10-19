@@ -168,7 +168,7 @@ def _pack(
         forms=_forms(entry, forms.get(word, [])),
         ipa=_by_variety(ipa.get(word, [])),
         wiktionary_hints=WiktionaryHints(
-            senses=_unique([_hint(gloss) for row in matching for gloss in row["glosses"]])[
+            senses=_unique([hint(gloss) for row in matching for gloss in row["glosses"]])[
                 :MAX_HINTS
             ],
             es_candidates=_unique(
@@ -204,7 +204,8 @@ def _same_entry(row: dict[str, Any], entry: dict[str, Any]) -> bool:
     return row["kind"] == entry["kind"] and (entry["kind"] != "word" or row["pos"] == entry["pos"])
 
 
-def _hint(gloss: str) -> str:
+def hint(gloss: str) -> str:
+    """A gloss cut to HINT_WORDS words: enough to show the meaning, too little to copy."""
     words = gloss.split()
     return " ".join(words[:HINT_WORDS]) + (" …" if len(words) > HINT_WORDS else "")
 

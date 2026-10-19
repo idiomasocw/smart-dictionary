@@ -599,7 +599,17 @@ Caddy accepts `bbb` traffic only from the BBB server's IP. Factory and admin rou
 - `side` is `en` when the query matched an English headword or form, and `l1` when it matched an equivalent in the student's language. `dir=auto` searches both sides and lists `en` first.
 - `matched.via` is `exact`, `form` or `equivalent`. `equivalent` is the sense's first equivalent in the student's variety.
 - `did_you_mean` (trigram and phonetic matches) is filled only when no group matched.
-- Inflected input such as *me di cuenta* needs `l1_forms` (§10.2), which publishing doesn't generate yet; until it does, such queries reach these senses through `did_you_mean`. The response gains a top-level `provisional` object with §6.5.
+- Inflected input such as *me di cuenta* needs `l1_forms` (§10.2), which publishing doesn't generate yet; until it does, such queries reach these senses through `did_you_mean`.
+- `provisional` is null unless nothing matched. Then it says what happens about the missing word (§6.5) [LK-10], for example `{"status": "generating", "entry_key": null, "retry_after_ms": 1500}`:
+
+| `status` | Meaning | What the plugin does |
+|---|---|---|
+| `generating` | AI is writing a provisional entry | Shows that it's writing one, and asks the same lookup again after `retry_after_ms`, for up to about 10 s. The entry then arrives as an ordinary item with `"provisional": true`, shown as *Beta* |
+| `ready` | An entry exists under `entry_key`, though the query doesn't reach it | Opens `entry_key` |
+| `queued` | The routine is writing this word, under `entry_key` | Says the word is coming soon |
+| `invalid` | Nothing to generate: not English, a misspelling, a name, blocked, or over 4 words | "Not found", with `did_you_mean` |
+| `quota_exceeded` | The student started 10 today | Asks them to try again tomorrow |
+| `unavailable` | AI isn't configured, or can't answer now | "Not found yet" |
 
 ### 5.4 Conventions
 
@@ -703,7 +713,7 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
 
 | File | Purpose |
 |---|---|
-| `factory/ROUTINE.md` | The run instructions (the routine's prompt points here) |
+| `factory/ROUTINE.md` | The run instructions, pasted whole into the routine's form |
 | `factory/STYLE.md` | The editorial style guide (product spec §6) |
 | `factory/rubric.md` | The reviewer's checklist |
 | `factory/schema/entry.v1.json` | Generated from the Pydantic models |
@@ -713,7 +723,7 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
 
 **Routine configuration** (the setup steps are in `factory/README.md`)
 - **Model:** Sonnet 5.5 or Opus 5.5, decided by the golden-set comparison in the pilot.
-- **Prompt:** set on the routine, and only points at `factory/ROUTINE.md`, so the run protocol is versioned with the code.
+- **Prompt:** the whole of `factory/ROUTINE.md`, pasted into the routine's form so the routine stands alone. It's versioned in the repo and pasted again when it changes. STYLE.md, the rubric, the schema and the scripts need no pasting: every run reads them from its fresh clone.
 - **Network:** *Custom*, with only the API host allowlisted. No package registries: the scripts use only Python's standard library, and the checking happens on the server.
 - **Secret:** the factory token is a **network secret** (Bearer) for the API host. Anthropic's proxy adds the header after each request leaves the VM, so the token never enters it and `FACTORY_TOKEN` stays unset in the cloud. The local twin sets it in the shell instead.
 - **Setup script:** none.
@@ -787,6 +797,15 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
 2. **Dedupe:** an advisory lock on `hash(q_norm)` plus the `misses` row, so concurrent students trigger only one generation.
 3. **Generate:** the gateway task `provisional_entry` (Haiku → DeepSeek → Groq) returns 1–2 senses, one example each and the es-419 layer, as structured output.
 4. **Validate** with V1–V5, V10 and V11, then **publish** with status `provisional` and top priority. The next routine run leases it, and the final entry replaces it under the same key.
+
+**Built (`backend/src/smart_dictionary/ai/provisional.py`):**
+- **The lookup decides with SQL only** and answers at once. The generation runs after the response, in a worker thread (a FastAPI background task), and the response's `provisional` object (§5.3) tells the plugin to ask again in 1.5 s.
+- **The gate also skips** searches in the student's language (`dir=l1`) and queries over 4 words. The quota counts each student's successful `provisional_entry` calls over the last 24 hours; students are rows in `users`, keyed by the LMS person ID from the proxy.
+- **The model drafts only the meaning:** lemma, part of speech, kind, and 1–2 senses with one example each. The server builds the document around it: the keys, pronunciations from CMUdict and Britfone, a multiword entry's pattern, and `provisional: true`.
+- **Checks:** all of V1–V11, with V11's counts for a short entry (1–2 senses, at least one example). Errors block; warnings lower `quality`. The query must be one of the draft's forms (*kettles* → *kettle*), so a model that drifts to another word publishes nothing.
+- **The model can turn a query down:** not English, a misspelling, a proper noun or a slur. The miss is then settled as `invalid`, and later lookups answer at once without a call.
+- **It never replaces the routine's work.** A word being written or already published keeps its document, and the miss points to it (`queued`, `ready`). A `queued` word nobody has written yet is taken over, keeping its queue priority. Provisional entries are leased first whatever their priority (`QUEUE_ORDER`).
+- **A failed generation** (no provider answered, or the draft failed its checks) leaves the miss `pending`, so the next lookup tries again. The quota and the budget bound the retries.
 
 ### 6.6 The quality loop: flags, reports, signals, audits and the golden set
 
@@ -895,11 +914,21 @@ Claude Haiku 5.5 (Messages API, structured output)
 
 ### 7.4 Prompts, safety and privacy
 
-- Prompts are versioned files (`backend/ai/prompts/{task}.v{n}.md`); the version is logged with each call.
+- Prompts are versioned files (`backend/src/smart_dictionary/ai/prompts/{task}.v{n}.md`); the version is logged with each call.
 - **16+ safety rules** are built into every system prompt. Outputs pass the V10 blocklist and language detection. Refusals map to a friendly message.
 - **Inputs:** sentences are capped at 200 characters; emails and phone numbers are stripped before sending; nothing else about the student is sent.
 - **Retention:** `llm_calls` stores no raw student text. The cache key for `check_sentence` is a hash, and its cached output expires after 30 days [NF-7].
 - **Before enrolling under-18 students:** re-check the Anthropic, DeepSeek and Groq terms for 16–17-year-old users, and add any safeguards they require.
+
+**Built (`backend/src/smart_dictionary/ai/`):** the gateway, and the `provisional_entry` task (§6.5). The other tasks arrive with their features.
+- **Claude** goes through the official `anthropic` SDK with structured outputs (`output_config.format`) at effort `low`. DeepSeek and Groq go over HTTPS with their JSON mode, and get the schema in the prompt.
+- **Keys:** a provider without its key (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `GROQ_API_KEY`) is skipped. With none, AI features answer `unavailable`.
+- **Claude's timeout is 8 s, not 4.** A whole provisional entry takes longer than a sentence check, and the student isn't waiting on the call. Re-measure it with real traffic.
+- **The schema sent** is the task's Pydantic schema, with every object closed and every property required (null when unused), and without the length limits structured outputs don't take. The gateway checks those limits when it validates the answer.
+- **Prices** are in `PRICES` (`ai/gateway.py`). Claude Haiku 5.5 costs $0.10 / $0.50 per million tokens (prompts up to 100K). A model missing from the table is priced as the dearest one, so a gap only makes the cap stricter.
+- **The cap** is `AI_MONTHLY_BUDGET_USD`, 5 by default. From 80% each call logs a warning; an alarm on that log line is still to do.
+- **The cache** keys on the prompt version and the input, so a new prompt never serves old answers.
+- **Privacy:** `llm_calls` keeps the student's `users` ID, for the quota, and the looked-up word as `ref_key`, which the gate has limited to known English words.
 
 ### 7.5 Promotion
 

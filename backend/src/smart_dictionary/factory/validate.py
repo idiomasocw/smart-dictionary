@@ -139,8 +139,11 @@ class Context:
         )
 
 
-def validate(entry: Entry, raw: dict[str, Any], context: Context) -> list[Issue]:
-    """Every issue in the document, errors and warnings."""
+def validate(
+    entry: Entry, raw: dict[str, Any], context: Context, *, provisional: bool = False
+) -> list[Issue]:
+    """Every issue in the document, errors and warnings. `provisional` checks a short entry
+    written for a missing word (design §6.5): fewer senses and examples are enough."""
     try:
         doc = EntryDoc.model_validate(raw)
     except ValidationError as error:
@@ -149,9 +152,9 @@ def validate(entry: Entry, raw: dict[str, Any], context: Context) -> list[Issue]
             for problem in error.errors()
         ]
     checks = (
-        _fixed_facts(entry, doc),
+        _fixed_facts(entry, doc, provisional),
         _kept_keys(entry, doc),
-        _counts_and_lengths(doc),
+        _counts_and_lengths(doc, provisional),
         _headword_in_examples(doc),
         _definitions(doc, context),
         _spanish(doc, context),
@@ -178,11 +181,14 @@ def score(issues: Iterable[Issue], verdict: str | None) -> float:
 # V2 ---------------------------------------------------------------------------------------
 
 
-def _fixed_facts(entry: Entry, doc: EntryDoc) -> Iterator[Issue]:
+def _fixed_facts(entry: Entry, doc: EntryDoc, provisional: bool) -> Iterator[Issue]:
     for name in ("key", "lemma", "pos", "kind"):
         expected, found = getattr(entry, name), getattr(doc, name)
         if found != expected:
             yield Issue("V2", "error", name, f"must stay {expected!r}, as leased (got {found!r})")
+    if doc.provisional != provisional:
+        expected = "true for a provisional entry" if provisional else "false: write a full entry"
+        yield Issue("V2", "error", "provisional", f"must be {expected}")
 
 
 def _kept_keys(entry: Entry, doc: EntryDoc) -> Iterator[Issue]:
@@ -206,14 +212,17 @@ def _keys(raw: dict[str, Any]) -> set[str]:
 # V11 and the style guide's limits ---------------------------------------------------------
 
 
-def _counts_and_lengths(doc: EntryDoc) -> Iterator[Issue]:
+def _counts_and_lengths(doc: EntryDoc, provisional: bool) -> Iterator[Issue]:
     active = [sense for sense in doc.senses if not sense.retired]
-    if not 1 <= len(active) <= 6:
-        yield Issue("V11", "error", doc.key, f"{len(active)} active senses; allowed 1-6")
+    most_senses, fewest_examples = (2, 1) if provisional else (6, 2)
+    if not 1 <= len(active) <= most_senses:
+        yield Issue("V11", "error", doc.key,
+                    f"{len(active)} active senses; allowed 1-{most_senses}")  # fmt: skip
     for sense in active:
         where = sense.key
-        if not 2 <= len(sense.examples) <= 3:
-            yield Issue("V11", "error", where, f"{len(sense.examples)} examples; allowed 2-3")
+        if not fewest_examples <= len(sense.examples) <= 3:
+            yield Issue("V11", "error", where,
+                        f"{len(sense.examples)} examples; allowed {fewest_examples}-3")  # fmt: skip
         if len(sense.collocations) > 6:
             yield Issue("V11", "error", where, f"{len(sense.collocations)} collocations; max 6")
         if len(sense.notes) > 3:

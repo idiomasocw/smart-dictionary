@@ -7,7 +7,7 @@ validators and judge run before it; for now it serves the development fixtures.
 import json
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -28,8 +28,10 @@ def publish(
     priority: int = 0,
     sources: list[str] | None = None,
     quality: float | None = None,
+    status: Literal["published", "provisional"] = "published",
 ) -> uuid.UUID:
-    """Upsert the entry as published, record a revision and rebuild its projections."""
+    """Upsert the entry as published (or provisional: an AI stand-in for a missing word,
+    design §6.5), record a revision and rebuild its projections."""
     payload = doc.model_dump(mode="json")
     homograph = parse_key(doc.key).homograph
     zipf_row = conn.execute(
@@ -38,10 +40,10 @@ def publish(
     row = conn.execute(
         "insert into entries (id, key, language, lemma, lemma_norm, pos, kind, homograph, cefr,"
         " freq_zipf, priority, status, doc, sources, quality, published_at)"
-        " values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'published', %s, %s, %s, now())"
+        " values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::entry_status, %s, %s, %s, now())"
         " on conflict (key) do update set lemma = excluded.lemma, lemma_norm = excluded.lemma_norm,"
         " pos = excluded.pos, kind = excluded.kind, cefr = excluded.cefr,"
-        " freq_zipf = coalesce(excluded.freq_zipf, entries.freq_zipf), status = 'published',"
+        " freq_zipf = coalesce(excluded.freq_zipf, entries.freq_zipf), status = excluded.status,"
         " doc = excluded.doc, quality = excluded.quality,"
         " content_version = entries.content_version + 1, attempts = 0, lease_batch_id = null,"
         " lease_expires_at = null, leased_from = null, published_at = now()"
@@ -58,6 +60,7 @@ def publish(
             doc.cefr,
             zipf_row[0] if zipf_row else None,
             priority,
+            status,
             Jsonb(payload),
             sources or [],
             quality,
