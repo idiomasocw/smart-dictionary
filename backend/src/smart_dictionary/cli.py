@@ -1,4 +1,4 @@
-"""Command-line entry point: `smart-dictionary api | migrate | schema | data | fixtures | seeds`.
+"""The `smart-dictionary` command: api, migrate, schema, data, fixtures, seeds and db.
 
 The container image runs api and migrate; `worker` joins them with the job queue.
 """
@@ -119,6 +119,18 @@ def _seeds(action: str, path: Path | None, out: Path | None) -> None:
     print(f"stored {inserted} candidates; {updated} already decided ones updated in place")
 
 
+def _db_app_role(role: str) -> None:
+    from smart_dictionary.core.settings import get_settings
+    from smart_dictionary.db.roles import check_login, reset_password
+    from smart_dictionary.db.sync import connect
+
+    with connect() as conn:
+        url = reset_password(conn, get_settings().database_url, role)
+    check_login(url, role)
+    print(f"{role} has a new password and logs in. Its DATABASE_URL:", file=sys.stderr)
+    print(url)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="smart-dictionary")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -153,6 +165,10 @@ def main(argv: list[str] | None = None) -> None:
         "--out", type=Path, help="export path (default data/raw/seed-candidates.csv)"
     )
 
+    db = commands.add_parser("db", help="database administration")
+    db.add_argument("action", choices=["app-role"], help="new password for the API's role")
+    db.add_argument("--role", default="dictionary_app")
+
     args = parser.parse_args(argv)
     if args.command == "api":
         _api(args.host, args.port, args.reload)
@@ -166,3 +182,5 @@ def main(argv: list[str] | None = None) -> None:
         _fixtures_load()
     elif args.command == "seeds":
         _seeds(args.action, args.file, args.out)
+    elif args.command == "db":
+        _db_app_role(args.role)
