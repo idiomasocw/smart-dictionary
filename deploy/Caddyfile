@@ -1,0 +1,12 @@
+# SITE_ADDRESS comes from caddy.env (SSM: /smart-dictionary/prod/caddy/SITE_ADDRESS).
+# Caddy gets and renews the certificate from Let's Encrypt, so the DNS record must point
+# straight at the Elastic IP (Cloudflare: DNS only, not proxied).
+{$SITE_ADDRESS} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+	reverse_proxy api:8000
+}

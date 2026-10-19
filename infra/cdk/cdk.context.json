@@ -1,0 +1,8 @@
+{
+  "availability-zones:account=924231986837:region=us-east-2": [
+    "us-east-2a",
+    "us-east-2b",
+    "us-east-2c"
+  ],
+  "ssm:account=924231986837:parameterName=/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64:region=us-east-2": "ami-0a767fc699e50fa17"
+}

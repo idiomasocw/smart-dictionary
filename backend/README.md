@@ -36,13 +36,14 @@ uv run pyright
 | Path | Contents |
 |---|---|
 | `src/smart_dictionary/core/` | Settings, logging, IDs, text normalization, content keys, the EntryDoc models and the request `Principal` |
-| `src/smart_dictionary/db/` | The async SQLAlchemy engine for the API, and a plain psycopg connection for importers and publishing |
+| `src/smart_dictionary/db/` | The async SQLAlchemy engine for the API, a plain psycopg connection for importers and publishing, and the API's least-privilege role (`dictionary_app`) |
 | `src/smart_dictionary/api/` | FastAPI app factory, authentication, problem+json errors and routes |
 | `src/smart_dictionary/search/` | Lookup and autocomplete: the SQL generators and their ranking |
 | `src/smart_dictionary/content/` | Publishing entry documents, their search projections and the student's entry card |
 | `src/smart_dictionary/importers/` | Fetchers and parsers that load the open datasets into the `ref_*` tables |
 | `src/smart_dictionary/seeds/` | The seed builder: the owner's seed file and the open lists, as ranked `seed_candidates` |
-| `src/smart_dictionary/cli.py` | `smart-dictionary api \| migrate \| schema \| data \| fixtures \| seeds`; `worker` arrives with the job queue |
+| `src/smart_dictionary/cli.py` | `smart-dictionary api \| migrate \| schema \| data \| fixtures \| seeds \| db`; `worker` arrives with the job queue |
+| `Dockerfile` | The production image: runtime dependencies only, run by an unprivileged user; deploying is in `../infra/README.md` |
 | `fixtures/` | Hand-written development entries (EntryDoc JSON), also used by the tests |
 | `migrations/` | Alembic revisions, written as plain SQL; no autogenerate |
 | `tests/` | pytest; database tests run on throwaway databases and skip themselves when no database is reachable |

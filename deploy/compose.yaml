@@ -1,0 +1,59 @@
+# The dictionary host (design §11.3): Caddy terminates HTTPS and proxies to the API.
+# deploy.sh runs this with IMAGE set and writes the env files from SSM Parameter Store:
+#   app.env      everything under /smart-dictionary/prod/app/      (the API's own secrets)
+#   migrate.env  everything under /smart-dictionary/prod/migrate/  (the owner's DATABASE_URL)
+#   caddy.env    everything under /smart-dictionary/prod/caddy/    (SITE_ADDRESS)
+# The API never sees migrate.env, so it can't change the schema.
+
+name: smart-dictionary
+
+services:
+  caddy:
+    image: caddy:2.11.7
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    env_file: [caddy.env]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    image: ${IMAGE:?set IMAGE to the image to run}
+    restart: unless-stopped
+    command: ["api", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: [app.env]
+    environment:
+      ENVIRONMENT: prod
+      # Only Caddy reaches the API, over this project's network: trust its X-Forwarded-For.
+      FORWARDED_ALLOW_IPS: "*"
+    expose: ["8000"]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # One-off: `docker compose run --rm migrate` applies the migrations as the owner.
+  migrate:
+    image: ${IMAGE:?set IMAGE to the image to run}
+    command: ["migrate"]
+    env_file: [app.env, migrate.env]
+    environment:
+      ENVIRONMENT: prod
+    profiles: [tools]
+
+volumes:
+  caddy_data: {}
+  caddy_config: {}

@@ -1,0 +1,8 @@
+{
+  "name": "smart-dictionary-infra",
+  "private": true,
+  "description": "Pins the AWS CDK CLI for `npx cdk`; the app itself is Python (app.py).",
+  "devDependencies": {
+    "aws-cdk": "2.1145.0"
+  }
+}

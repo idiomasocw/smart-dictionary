@@ -1044,13 +1044,13 @@ volumes: { caddy_data: {} }
   - plugin lint, tests and build;
   - checks that the OpenAPI → TS client and the EntryDoc schema are up to date;
   - the golden-set check when `factory/` changes.
-- **On tag:** build linux/arm64 (prod) + linux/amd64 (dev) images with buildx and push them to **ECR**, as the LMS does.
-- **Deploy** (your LMS's proven pattern: ECR, a wait for SSH, health-gated cutover, never cancelled mid-run):
-  1. Run a manual workflow that connects to the dictionary EC2 over SSH.
-  2. `docker compose pull`.
-  3. Run the migrations as a one-off container (`alembic upgrade head`).
-  4. `up -d`.
-  - **Rollback:** redeploy the previous tag.
+- **Deploy** (`.github/workflows/deploy.yml`, run by hand; health-gated and never cancelled mid-run, like the LMS's, but through **SSM instead of SSH**):
+  1. The job assumes the stack's deploy role through **GitHub OIDC**. The role trusts only this repository's `production` environment, so no AWS keys are stored in GitHub.
+  2. It builds the linux/arm64 image with buildx and pushes it to **ECR**, tagged with the commit. A commit that already has an image skips the build.
+  3. It copies `deploy/` to S3 and runs `deploy.sh` on the host with **SSM Run Command**. The host has no SSH port; people connect with SSM Session Manager.
+  4. `deploy.sh` writes the env files from Parameter Store, pulls the image, and runs the migrations as a one-off container, as the owner. Then `up --wait` gates on the API's health check, and the previous image goes back up if it fails.
+  - **Rollback:** run the workflow with an earlier commit; its image is reused.
+  - `infra/README.md` is the runbook.
 
 ### 11.5 Backups
 - **Supabase daily backups** (Pro plan; 7-day retention).
@@ -1060,12 +1060,15 @@ volumes: { caddy_data: {} }
 - **The EC2 itself is disposable:** the CDK stack and images recreate it, so it needs no backup.
 
 ### 11.6 Secrets
-- **On the EC2:** secrets live in **SSM Parameter Store**, and the instance role reads them at deploy time to write `.env` (mode 600):
-  - Supabase connection strings;
-  - the Anthropic, DeepSeek and Groq keys (separate keys from the LMS's, for cost attribution and revocation);
-  - the proxy secret;
-  - `DICTIONARY_SERVICE_TOKEN`.
-  The instance role also grants access to only this service's S3 prefixes, so there are no static AWS keys on the host.
+- **On the EC2:** secrets live in **SSM Parameter Store** as SecureStrings. At each deploy the instance role reads them and writes one env file per path (mode 600):
+  - `/smart-dictionary/prod/app/` for the API:
+    - `DATABASE_URL`, as `dictionary_app` through the session pooler. That role reads and writes rows but can't change the schema (revision 0005). The pooler is IPv4, which Docker's default network supports; the direct connection is IPv6 only.
+    - `BBB_PROXY_SECRET`;
+    - later the Anthropic, DeepSeek and Groq keys (separate from the LMS's, for cost attribution and revocation) and `DICTIONARY_SERVICE_TOKEN`.
+  - `/smart-dictionary/prod/migrate/` holds the owner's `DATABASE_URL`, which only the one-off migration container gets.
+  - `/smart-dictionary/prod/caddy/` holds `SITE_ADDRESS`.
+  - The metadata service answers the host only (IMDSv2, hop limit 1), so a container can't borrow the instance role to read the owner's URL.
+  - The instance role also reaches only this service's S3 prefixes, so there are no static AWS keys on the host.
 - **In the database:** factory and admin tokens, hashed.
 - **On the BBB server:** the proxy secret, in a root-only nginx include.
 - **In the repo:** never any secret.

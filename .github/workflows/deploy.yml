@@ -1,0 +1,131 @@
+name: Deploy
+
+# Builds the arm64 image, pushes it to ECR and deploys it to the dictionary host through
+# SSM Run Command (design §11.4). AWS access comes from OIDC: the job assumes the stack's
+# deploy role, which trusts only this repository's `production` environment. No AWS keys
+# are stored in GitHub, and the host has no SSH port.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to deploy
+        required: true
+        default: main
+
+permissions:
+  contents: read
+  id-token: write
+
+# One deploy at a time, and never cancelled halfway.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-2
+  STACK_NAME: SmartDictionary
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 40
+    steps:
+      # Actions are pinned to commits: this job holds AWS credentials.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Read the stack's outputs
+        id: stack
+        run: |
+          aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+            --query 'Stacks[0].Outputs' --output json > outputs.json
+          for key in InstanceId ImageRepository DeployBucket SiteUrl; do
+            value=$(jq -r --arg key "$key" '.[] | select(.OutputKey == $key) | .OutputValue' outputs.json)
+            if [ -z "$value" ]; then echo "::error::stack output $key is missing"; exit 1; fi
+            echo "$key=$value" >> "$GITHUB_OUTPUT"
+          done
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Tags are immutable: a commit that was built before (a redeploy or a rollback) is reused.
+      - name: Look for this commit's image
+        id: image
+        env:
+          REPOSITORY: ${{ steps.stack.outputs.ImageRepository }}
+          SHA: ${{ steps.stack.outputs.sha }}
+        run: |
+          if aws ecr describe-images --repository-name "${REPOSITORY#*/}" \
+            --image-ids imageTag="$SHA" > /dev/null 2>&1; then
+            echo "built=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "built=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.image.outputs.built == 'false'
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      - if: steps.image.outputs.built == 'false'
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+
+      - if: steps.image.outputs.built == 'false'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build and push the arm64 image
+        if: steps.image.outputs.built == 'false'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: backend
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.stack.outputs.ImageRepository }}:${{ steps.stack.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy over SSM
+        env:
+          SHA: ${{ steps.stack.outputs.sha }}
+          INSTANCE_ID: ${{ steps.stack.outputs.InstanceId }}
+          BUCKET: ${{ steps.stack.outputs.DeployBucket }}
+          IMAGE: ${{ steps.stack.outputs.ImageRepository }}:${{ steps.stack.outputs.sha }}
+        run: |
+          aws s3 cp deploy/ "s3://$BUCKET/deploy/$SHA/" --recursive --only-show-errors
+          parameters=$(jq -n --arg region "$AWS_REGION" --arg bucket "$BUCKET" \
+            --arg sha "$SHA" --arg image "$IMAGE" '{
+              commands: [
+                "set -e",
+                "aws s3 cp --region \($region) --recursive --only-show-errors s3://\($bucket)/deploy/\($sha)/ /opt/smart-dictionary/",
+                "bash /opt/smart-dictionary/deploy.sh \($image)"
+              ],
+              executionTimeout: ["1200"]
+            }')
+          command_id=$(aws ssm send-command --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript --comment "deploy ${SHA:0:12}" \
+            --parameters "$parameters" --query Command.CommandId --output text)
+          echo "SSM command $command_id"
+          status=Pending
+          for _ in $(seq 1 120); do
+            sleep 10
+            status=$(aws ssm get-command-invocation --command-id "$command_id" \
+              --instance-id "$INSTANCE_ID" --query Status --output text 2> /dev/null || echo Pending)
+            case $status in Pending | InProgress | Delayed) ;; *) break ;; esac
+          done
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query '[StandardOutputContent, StandardErrorContent]' --output text
+          echo "status: $status"
+          test "$status" = Success
+
+      - name: Check the public endpoint
+        env:
+          SITE_URL: ${{ steps.stack.outputs.SiteUrl }}
+          SHA: ${{ steps.stack.outputs.sha }}
+        run: |
+          curl -fsS --retry 12 --retry-delay 5 --retry-all-errors "$SITE_URL/readyz"
+          echo "Deployed \`${SHA:0:12}\` to $SITE_URL" >> "$GITHUB_STEP_SUMMARY"

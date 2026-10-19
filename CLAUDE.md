@@ -39,7 +39,10 @@ uv run smart-dictionary data import --all  # load them into the ref_* tables
 uv run smart-dictionary fixtures load      # publish the hand-written entries in fixtures/
 uv run smart-dictionary seeds import       # seed_candidates from the owner's and open lists
 uv run smart-dictionary seeds export       # the ranked candidates, to data/raw/seed-candidates.csv
+uv run smart-dictionary db app-role        # new password for the API's role; prints its DATABASE_URL
 uv run smart-dictionary api                # http://127.0.0.1:8000
 ```
 
 The local database runs from the repo root: `supabase start` / `supabase stop`, on ports 34320–34329. The LMS's local stack uses 54320–54329, so never move this project onto those.
+
+Production runs on its own EC2 in us-east-2: `infra/cdk` (Python CDK), `deploy/` (Compose, Caddy, the deploy script) and `.github/workflows/deploy.yml`, which deploys through SSM. `infra/README.md` is the runbook. The API connects as `dictionary_app`, which can't change the schema; migrations run as the owner.
