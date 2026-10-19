@@ -11,8 +11,11 @@ A1-B2 coverage, so ordering by tier alone would start with function words and le
 words that only CEFR-J lists behind the owner's long tail.
 """
 
+import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
@@ -36,6 +39,30 @@ where c.pos is not null and c.kind is not null and c.entry_id is null
     select from entries e
     where e.language = 'en' and e.lemma_norm = c.lemma_norm and e.pos = c.pos
       and e.kind = c.kind and e.homograph = c.homograph)
+"""
+
+CHUNK = 2000
+# One statement per chunk. A key that already exists is skipped, so its candidate stays
+# unlinked; sources travel as JSON because Postgres arrays of arrays must be rectangular.
+INSERT = """
+insert into entries (id, key, language, lemma, lemma_norm, pos, kind, homograph, cefr,
+                     freq_zipf, priority, status, sources)
+select r.id, r.key, 'en', r.lemma, r.lemma_norm, r.pos, r.kind::entry_kind, r.homograph,
+       r.cefr, r.zipf, r.priority, 'queued',
+       array(select jsonb_array_elements_text(r.sources::jsonb))
+from unnest(%s::uuid[], %s::text[], %s::text[], %s::text[], %s::text[], %s::text[],
+            %s::smallint[], %s::text[], %s::numeric[], %s::integer[], %s::text[])
+  as r(id, key, lemma, lemma_norm, pos, kind, homograph, cefr, zipf, priority, sources)
+on conflict do nothing
+"""
+# Links each candidate to the entry made for it: only the ids that were inserted match.
+LINK = """
+update seed_candidates c
+set entry_id = e.id, decision = coalesce(c.decision, 'accept'), updated_at = now()
+from unnest(%s::uuid[], %s::uuid[]) as made(candidate_id, entry_id)
+join entries e on e.id = made.entry_id
+where c.id = made.candidate_id
+returning c.id
 """
 
 
@@ -68,45 +95,58 @@ def queue(
     levels: list[str] | None = None,
     limit: int | None = None,
     dry_run: bool = False,
+    progress: Callable[[int, int], None] | None = None,
 ) -> list[Queued]:
-    """Queue the eligible candidates in priority order; returns what was (or would be) queued."""
+    """Queue the eligible candidates in priority order; returns what was (or would be) queued.
+
+    The rows go in chunks of CHUNK, two statements each, and each chunk is committed: a
+    full queue of ~38,000 words takes seconds over a remote connection instead of hours,
+    shows its progress, and an interrupted run keeps its chunks, so running it again
+    carries on from there."""
     with conn.cursor(row_factory=dict_row) as cursor:
         rows = cursor.execute(ELIGIBLE, {"lemmas": lemmas, "levels": levels}).fetchall()
     for row in rows:
         row["priority"] = priority(row["levels"], row["tier"], row["zipf"])
     rows.sort(key=lambda row: (-row["priority"], row["lemma_norm"], row["pos"]))
     rows = rows[:limit] if limit is not None else rows
+    planned = [
+        (row, entry_key("en", row["lemma"], row["pos"], row["kind"], row["homograph"]),
+         easiest(row["levels"]))
+        for row in rows
+    ]  # fmt: skip
+    if dry_run:
+        return [_queued(row, key, cefr) for row, key, cefr in planned]
 
     queued: list[Queued] = []
-    for row in rows:
-        key = entry_key("en", row["lemma"], row["pos"], row["kind"], row["homograph"])
-        cefr = easiest(row["levels"])
-        if not dry_run:
-            inserted = conn.execute(
-                "insert into entries (id, key, language, lemma, lemma_norm, pos, kind, homograph,"
-                " cefr, freq_zipf, priority, status, sources)"
-                " values (%s, %s, 'en', %s, %s, %s, %s, %s, %s, %s, %s, 'queued', %s)"
-                " on conflict do nothing returning id",
-                (
-                    new_id(),
-                    key,
-                    row["lemma"],
-                    row["lemma_norm"],
-                    row["pos"],
-                    row["kind"],
-                    row["homograph"],
-                    cefr,
-                    row["zipf"],
-                    row["priority"],
-                    row["sources"],
-                ),
-            ).fetchone()
-            if inserted is None:
-                continue
-            conn.execute(
-                "update seed_candidates set entry_id = %s, decision = coalesce(decision, 'accept'),"
-                " updated_at = now() where id = %s",
-                (inserted[0], row["id"]),
-            )
-        queued.append(Queued(key, row["lemma"], row["pos"], row["kind"], cefr, row["priority"]))
+    for start in range(0, len(planned), CHUNK):
+        chunk = planned[start : start + CHUNK]
+        ids = [new_id() for _ in chunk]
+        conn.execute(
+            INSERT,
+            (
+                ids,
+                [key for _, key, _ in chunk],
+                [row["lemma"] for row, _, _ in chunk],
+                [row["lemma_norm"] for row, _, _ in chunk],
+                [row["pos"] for row, _, _ in chunk],
+                [row["kind"] for row, _, _ in chunk],
+                [row["homograph"] for row, _, _ in chunk],
+                [cefr for _, _, cefr in chunk],
+                [row["zipf"] for row, _, _ in chunk],
+                [row["priority"] for row, _, _ in chunk],
+                [json.dumps(row["sources"]) for row, _, _ in chunk],
+            ),
+        )
+        linked = {
+            found[0]
+            for found in conn.execute(LINK, ([row["id"] for row, _, _ in chunk], ids)).fetchall()
+        }
+        conn.commit()
+        queued += [_queued(row, key, cefr) for row, key, cefr in chunk if row["id"] in linked]
+        if progress is not None:
+            progress(start + len(chunk), len(planned))
     return queued
+
+
+def _queued(row: dict[str, Any], key: str, cefr: str | None) -> Queued:
+    return Queued(key, row["lemma"], row["pos"], row["kind"], cefr, row["priority"])

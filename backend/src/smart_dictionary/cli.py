@@ -126,6 +126,9 @@ def _seeds_queue(
     from smart_dictionary.db.sync import connect
     from smart_dictionary.factory.queue import queue
 
+    def progress(done: int, total: int) -> None:
+        print(f"queueing: {done} of {total}", file=sys.stderr, flush=True)
+
     with connect() as conn:
         queued = queue(
             conn,
@@ -133,6 +136,7 @@ def _seeds_queue(
             levels=levels,
             limit=limit,
             dry_run=dry_run,
+            progress=progress,
         )
         if dry_run:
             conn.rollback()
@@ -143,10 +147,16 @@ def _seeds_queue(
     print(f"{'would queue' if dry_run else 'queued'} {len(queued)} entries")
 
 
-def _factory(action: str, name: str) -> None:
+def _factory(action: str, name: str | None, runs: int) -> None:
     from smart_dictionary.db.sync import connect
-    from smart_dictionary.factory import tokens
+    from smart_dictionary.factory import progress, tokens
 
+    if action == "status":
+        with connect() as conn:
+            print("\n".join(progress.report(conn, runs)))
+        return
+    if not name:
+        raise SystemExit(f"factory {action} needs --name")
     with connect() as conn:
         if action == "revoke":
             print(f"revoked {tokens.revoke(conn, name)} token(s) named {name!r}")
@@ -209,9 +219,10 @@ def main(argv: list[str] | None = None) -> None:
     seeds.add_argument("--limit", type=int, help="queue: at most this many, by priority")
     seeds.add_argument("--dry-run", action="store_true", help="queue: show, change nothing")
 
-    factory = commands.add_parser("factory", help="tokens for the factory routine")
-    factory.add_argument("action", choices=["token", "revoke"])
-    factory.add_argument("--name", required=True, help="a label such as 'routine'")
+    factory = commands.add_parser("factory", help="the factory's progress and tokens")
+    factory.add_argument("action", choices=["status", "token", "revoke"])
+    factory.add_argument("--name", help="token and revoke: a label such as 'routine'")
+    factory.add_argument("--runs", type=int, default=10, help="status: how many recent runs")
 
     db = commands.add_parser("db", help="database administration")
     db.add_argument("action", choices=["app-role"], help="new password for the API's role")
@@ -233,6 +244,6 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "seeds":
         _seeds(args.action, args.file, args.out)
     elif args.command == "factory":
-        _factory(args.action, args.name)
+        _factory(args.action, args.name, args.runs)
     elif args.command == "db":
         _db_app_role(args.role)

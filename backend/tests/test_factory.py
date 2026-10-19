@@ -11,7 +11,8 @@ from fastapi.testclient import TestClient
 from factory_docs import GO_DOC, go_doc, world
 from smart_dictionary.api.app import create_app
 from smart_dictionary.db.sync import connect
-from smart_dictionary.factory import lease, tokens
+from smart_dictionary.factory import lease, progress, tokens
+from smart_dictionary.factory import queue as queue_module
 from smart_dictionary.factory.packs import build
 from smart_dictionary.factory.queue import queue
 from smart_dictionary.factory.submit import BatchClosed, Submission, submit
@@ -57,6 +58,20 @@ def test_queue_picks_headwords_levels_and_a_limit(migrated_database_url):
             "en:these:pron",
         ]
         assert len(queue(conn, limit=2, dry_run=True)) == 2
+
+
+def test_queueing_goes_in_chunks_and_status_reports_it(migrated_database_url, monkeypatch):
+    monkeypatch.setattr(queue_module, "CHUNK", 2)
+    seen: list[tuple[int, int]] = []
+    with connect() as conn:
+        world(conn)
+        queued = queue(conn, progress=lambda done, total: seen.append((done, total)))
+        assert len(queued) == 5 and seen == [(2, 5), (4, 5), (5, 5)]
+        lease.lease(conn, 2, "test run")
+        lines = progress.report(conn)
+    assert "        3  queued        waiting for a run" in lines
+    assert "        2  generating    in a run right now" in lines
+    assert any("leased      2 words" in line and "test run" in line for line in lines)
 
 
 def test_factory_tokens_are_stored_hashed_and_scoped(migrated_database_url):
