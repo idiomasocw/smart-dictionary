@@ -103,14 +103,17 @@ def _seeds(action: str, path: Path | None, out: Path | None) -> None:
     from smart_dictionary.seeds import builder, owner, store
 
     configure_logging("INFO")
-    with connect() as conn:
-        if action == "export":
-            target = out or SEED_EXPORT
+    if action == "export":
+        target = out or SEED_EXPORT
+        with connect() as conn:
             print(f"{store.export(conn, target)} candidates -> {target}")
-            return
-        rows = owner.read_owner_seeds(path or OWNER_SEEDS)
+        return
+    # Three short steps, so the database never waits on the build: read, build, store.
+    rows = owner.read_owner_seeds(path or OWNER_SEEDS)
+    with connect() as conn:
         reference = builder.load_reference(conn)
-        candidates = builder.build(rows, reference)
+    candidates = builder.build(rows, reference)
+    with connect() as conn:
         inserted, updated = store.store(conn, candidates)
     print(builder.summary(candidates, reference))
     print(f"stored {inserted} candidates; {updated} already decided ones updated in place")

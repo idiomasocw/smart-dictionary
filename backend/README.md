@@ -18,7 +18,7 @@ uv run smart-dictionary api                # http://127.0.0.1:8000/healthz
 
 `smart-dictionary data list` shows the datasets in `../data/datasets.toml`; `data fetch` and `data import` also take dataset ids instead of `--all`.
 
-`smart-dictionary seeds import` builds `seed_candidates` from `../data/seeds/owner/owner-seeds.csv` (written by `../scripts/normalize_owner_lists.py`) and the open lists, and `seeds export` writes them, ranked, to `../data/raw/seed-candidates.csv`. Seed candidates join the Wiktionary keep set, so after the first `seeds import`, run `data import kaikki-en` and then `seeds import` again.
+`smart-dictionary seeds import` builds `seed_candidates` from `../data/seeds/owner/owner-seeds.csv` (written by `../scripts/normalize_owner_lists.py`) and the open lists, and `seeds export` writes them, ranked, to `../data/raw/seed-candidates.csv`. Seed candidates join the Wiktionary keep set and the builder reads Wiktionary, so on a new database run, in this order, `data import --all`, `seeds import`, `data import kaikki-en` and `seeds import`. Without Wiktionary rows the first build folds some list words into others (chiselled into chisel), and the Wiktionary import then misses their rows.
 
 The read API (`/v1/lookup`, `/v1/suggest`, `/v1/entries/{key}`) is specified in design §5, and outside production its interactive docs are at `/docs`. Errors are `application/problem+json`. When `BBB_PROXY_SECRET` is set, every `/v1` request needs the proxy's `X-Dict-Secret` header.
 

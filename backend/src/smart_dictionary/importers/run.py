@@ -2,7 +2,8 @@
 
 import importlib.metadata
 import logging
-from collections.abc import Iterable
+import time
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
 import psycopg
@@ -26,25 +27,73 @@ IMPORTER_ORDER = [
     "kaikki",
 ]
 
+# A load whose connection drops starts over from the spool, waiting RETRY_DELAY seconds
+# times the attempt number in between.
+LOAD_ATTEMPTS = 3
+RETRY_DELAY = 10
+
 
 def in_import_order(datasets: Iterable[Dataset]) -> list[Dataset]:
     return sorted(datasets, key=lambda dataset: IMPORTER_ORDER.index(dataset.importer))
 
 
 def import_dataset(dataset: Dataset, *, path: Path | None = None) -> int:
-    """Replace the dataset's rows with a fresh import; returns the row count."""
+    """Replace the dataset's rows with a fresh import; returns the row count.
+
+    Parsing happens with no transaction open: the plan reads what it needs (the Wiktionary
+    keep set) and closes its connection, and the rows are spooled. Only then does the load
+    open its transaction, copying in short chunks (importers.db)."""
     if path is None:
         path = fetch(dataset)
     version = dataset.version
     if dataset.importer == "wordfreq":
         version = importlib.metadata.version("wordfreq")
+    sha256 = sha256_of(path) if path else None
     with db.connect() as conn:
-        db.replace_dataset(conn, dataset, version=version, sha256=sha256_of(path) if path else None)
         table, columns, rows = _plan(conn, dataset, path)
-        count = db.copy_rows(conn, table, columns, rows)
-        db.finish_dataset(conn, dataset.id, count)
-    log.info("%s: %d rows into %s", dataset.id, count, table)
+    started = time.monotonic()
+    with db.spooled(rows) as replay:
+        parsed = time.monotonic()
+        count = _load(dataset, table, columns, replay, version=version, sha256=sha256)
+    log.info(
+        "%s: %d rows into %s (parsed in %.0fs, loaded in %.0fs)",
+        dataset.id,
+        count,
+        table,
+        parsed - started,
+        time.monotonic() - parsed,
+    )
     return count
+
+
+def _load(
+    dataset: Dataset,
+    table: str,
+    columns: list[str],
+    replay: Callable[[], Iterator[tuple]],
+    *,
+    version: str,
+    sha256: str | None,
+) -> int:
+    """Replace the dataset's rows in one transaction, starting over if the connection drops.
+
+    Errors from the server carry a SQLSTATE and are raised at once; a dropped connection has
+    none. Its transaction rolled back, and if what was lost was the COMMIT's reply, the next
+    attempt replaces the rows again, so starting over is always safe."""
+    attempt = 1
+    while True:
+        try:
+            with db.connect() as conn:
+                db.replace_dataset(conn, dataset, version=version, sha256=sha256)
+                count = db.copy_rows(conn, table, columns, replay())
+                db.finish_dataset(conn, dataset.id, count)
+            return count
+        except psycopg.OperationalError as error:
+            if error.sqlstate is not None or attempt == LOAD_ATTEMPTS:
+                raise
+            log.warning("%s: the connection dropped (%s); loading again", dataset.id, error)
+            time.sleep(RETRY_DELAY * attempt)
+            attempt += 1
 
 
 def _plan(

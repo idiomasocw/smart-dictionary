@@ -5,8 +5,10 @@ from typing import Any, LiteralString
 
 import psycopg
 import pytest
+from psycopg import sql
+from psycopg.types.json import Jsonb
 
-from smart_dictionary.importers import kaikki, sources
+from smart_dictionary.importers import db, kaikki, run, sources
 from smart_dictionary.importers.db import connect
 from smart_dictionary.importers.manifest import Dataset, load_manifest
 from smart_dictionary.importers.phonetics import arpabet_to_ipa, britfone_to_ipa
@@ -379,6 +381,118 @@ def test_imports_load_the_reference_tables(migrated_database_url, tmp_path: Path
         assert variants == [("catalog", ["catalogue"])]
         ipa = conn.execute("select variety, ipa from ref_ipa order by variety").fetchall()
         assert ipa == [("en-GB", "ˈstriːt"), ("en-US", "ˈstrit")]
+
+
+def test_import_starts_over_when_the_connection_drops(
+    migrated_database_url, tmp_path: Path, monkeypatch
+):
+    cefr = tmp_path / "cefr.csv"
+    cefr.write_text("headword,pos,CEFR\nabandon,verb,B1\nbus stop,noun,A2\n", encoding="utf-8")
+    copy_rows = db.copy_rows
+    attempts: list[str] = []
+
+    def drops_once(conn, table, columns, rows, **options):
+        # The first attempt sends every row, then loses the connection before its COMMIT.
+        attempts.append(table)
+        count = copy_rows(conn, table, columns, rows, **options)
+        if len(attempts) == 1:
+            raise psycopg.OperationalError("the connection is lost")
+        return count
+
+    monkeypatch.setattr(db, "copy_rows", drops_once)
+    monkeypatch.setattr(run, "RETRY_DELAY", 0)
+    assert import_dataset(_dataset("t-cefr", "cefr_list"), path=cefr) == 2
+    assert len(attempts) == 2
+    with connect() as conn:
+        # The dropped attempt rolled back and the second replayed the spool from its start.
+        assert _scalar(conn, "select count(*) from ref_lists") == 2
+        assert _scalar(conn, "select row_count from ref_datasets where id = 't-cefr'") == 2
+
+
+def test_import_raises_server_errors_and_gives_up_after_three_drops(
+    migrated_database_url, tmp_path: Path, monkeypatch
+):
+    cefr = tmp_path / "cefr.csv"
+    cefr.write_text("headword,pos,CEFR\nabandon,verb,B1\n", encoding="utf-8")
+    assert import_dataset(_dataset("t-cefr", "cefr_list"), path=cefr) == 1
+    attempts: list[str] = []
+
+    def fails(error: psycopg.Error):
+        def copy_rows(conn, table, columns, rows, **options):
+            attempts.append(table)
+            raise error
+
+        return copy_rows
+
+    monkeypatch.setattr(run, "RETRY_DELAY", 0)
+    # A server error has a SQLSTATE: starting over wouldn't change it.
+    monkeypatch.setattr(db, "copy_rows", fails(psycopg.errors.QueryCanceled("timeout")))
+    with pytest.raises(psycopg.errors.QueryCanceled):
+        import_dataset(_dataset("t-cefr", "cefr_list"), path=cefr)
+    assert len(attempts) == 1
+
+    attempts.clear()
+    monkeypatch.setattr(db, "copy_rows", fails(psycopg.OperationalError("the connection is lost")))
+    with pytest.raises(psycopg.OperationalError):
+        import_dataset(_dataset("t-cefr", "cefr_list"), path=cefr)
+    assert len(attempts) == run.LOAD_ATTEMPTS
+    with connect() as conn:
+        # Each failed load rolled back, so the earlier import is intact.
+        assert _scalar(conn, "select row_count from ref_datasets where id = 't-cefr'") == 1
+
+
+def test_copy_rows_sends_short_statements(scratch_database_url):
+    with connect() as conn:
+        conn.execute("create table chunked (n int, doc jsonb)")
+        conn.execute("create table statements (size int)")
+        # A statement-level trigger runs once per COPY and sees that statement's rows.
+        conn.execute(
+            "create function record_statement() returns trigger language plpgsql as $$"
+            " begin insert into statements select count(*) from inserted; return null; end $$"
+        )
+        conn.execute(
+            "create trigger record_statement after insert on chunked"
+            " referencing new table as inserted"
+            " for each statement execute function record_statement()"
+        )
+        rows = [(n, Jsonb({"n": n})) for n in range(5)]
+        assert db.copy_rows(conn, "chunked", ["n", "doc"], rows, chunk=2) == 5
+        assert db.copy_rows(conn, "chunked", ["n", "doc"], [], chunk=2) == 0
+        sizes = [size for (size,) in conn.execute("select size from statements")]
+        assert sizes == [2, 2, 1]
+        loaded = conn.execute("select n, doc from chunked order by n").fetchall()
+        assert loaded == [(n, {"n": n}) for n in range(5)]
+
+
+def test_spooled_rows_are_parsed_first_and_replay_intact():
+    rows = [("kaikki-en", ["a", "b"], None, Jsonb({"es": ["casa"]})), ("x", [], 0.5, Jsonb([]))]
+    parsed: list[str] = []
+
+    def parse():
+        for row in rows:
+            parsed.append(row[0])
+            yield row
+
+    def plain(values):
+        return [tuple(v.obj if isinstance(v, Jsonb) else v for v in row) for row in values]
+
+    with db.spooled(parse()) as replay:
+        # Every row is parsed before the caller opens its transaction.
+        assert parsed == ["kaikki-en", "x"]
+        assert plain(replay()) == plain(rows)
+        # A load that starts over reads the spool from the beginning again.
+        assert plain(replay()) == plain(rows)
+
+
+def test_batch_connections_have_no_statement_timeout(scratch_database_url):
+    # Hosted Supabase stops statements after two minutes; batch work lifts that.
+    with connect() as conn:
+        name = _scalar(conn, "select current_database()")
+        conn.execute(
+            sql.SQL("alter database {} set statement_timeout = '1s'").format(sql.Identifier(name))
+        )
+    with connect() as conn:
+        assert _scalar(conn, "show statement_timeout") == "0"
 
 
 def _scalar(conn: psycopg.Connection, query: LiteralString) -> Any:
