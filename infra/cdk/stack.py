@@ -38,7 +38,7 @@ class DictionaryStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
         domain = self.node.get_context("domain")
         alert_email = self.node.get_context("alert_email")
-        repository = self.node.get_context("github_repository")
+        oidc_subject = self.node.get_context("github_oidc_subject")
         monthly_budget = float(self.node.get_context("monthly_budget_usd"))
 
         # Public subnets only, so no NAT gateway. IPv4 only: the containers reach Supabase
@@ -290,9 +290,9 @@ class DictionaryStack(Stack):
                 conditions={
                     "StringEquals": {
                         "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-                        "token.actions.githubusercontent.com:sub": (
-                            f"repo:{repository}:environment:production"
-                        ),
+                        # The repository uses GitHub's immutable subject: owner and repo
+                        # with their numeric IDs, so a re-created repo can't take over.
+                        "token.actions.githubusercontent.com:sub": oidc_subject,
                     }
                 },
             ),

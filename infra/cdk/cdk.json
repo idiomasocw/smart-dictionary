@@ -3,7 +3,7 @@
   "context": {
     "domain": "dictionary.onecultureworld.com",
     "alert_email": "admin@onecultureworld.com",
-    "github_repository": "idiomasocw/smart-dictionary",
+    "github_oidc_subject": "repo:idiomasocw@128176786/smart-dictionary@1424556005:environment:production",
     "monthly_budget_usd": 40,
     "@aws-cdk-containers/ecs-service-extensions:enableDefaultLogDriver": true,
     "@aws-cdk/aws-apigateway:authorizerChangeDeploymentLogicalId": true,
