@@ -11,6 +11,8 @@ from pydantic import BaseModel
 VARIETY_LANGUAGE = {"es-419": "es", "pt-BR": "pt", "ar": "ar"}
 # Rough rank bands from wordfreq Zipf values [EC-1].
 FREQUENCY_BANDS = ((5.0, "1k"), (4.5, "3k"), (4.2, "5k"), (3.8, "10k"), (3.3, "20k"))
+# Audio links by the key that owns them (the entry, a sense or an example), then variety.
+AudioLinks = dict[str, dict[str, str]]
 
 
 class CardEquivalent(BaseModel):
@@ -31,6 +33,7 @@ class CardExample(BaseModel):
     text: str
     cefr: str | None = None
     translation: str | None = None
+    audio_url: str | None = None
 
 
 class CardNote(BaseModel):
@@ -59,6 +62,7 @@ class CardSense(BaseModel):
 class CardPronunciation(BaseModel):
     variety: str
     ipa: str
+    audio_url: str | None = None
 
 
 class CardRelated(BaseModel):
@@ -82,6 +86,14 @@ class EntryCard(BaseModel):
     related: list[CardRelated]
 
 
+def _spoken(doc: dict[str, Any], pronunciation: dict[str, Any], audio: AudioLinks) -> str | None:
+    """A pronunciation's file: the entry's, or for a homograph per sense, its first sense's."""
+    owners = pronunciation.get("sense_keys") or [doc["key"]]
+    variety = pronunciation["variety"]
+    found = (audio[owner][variety] for owner in owners if variety in audio.get(owner, {}))
+    return next(found, None)
+
+
 def frequency_band(zipf: float | None) -> str | None:
     if zipf is None:
         return None
@@ -94,9 +106,16 @@ def equivalent_flag_key(sense_key: str, variety: str, term: str) -> str:
 
 
 def project_card(
-    doc: dict[str, Any], *, variety: str, hidden: set[str], zipf: float | None
+    doc: dict[str, Any],
+    *,
+    variety: str,
+    hidden: set[str],
+    zipf: float | None,
+    audio: AudioLinks | None = None,
 ) -> EntryCard:
+    """The card; `audio` holds the links of the entry's uploaded audio files, if any."""
     language = VARIETY_LANGUAGE[variety]
+    audio = audio or {}
     senses: list[CardSense] = []
     for sense in doc["senses"]:
         key = sense["key"]
@@ -137,6 +156,7 @@ def project_card(
                         text=example["text"],
                         cefr=example.get("cefr"),
                         translation=(example.get("translations") or {}).get(variety),
+                        audio_url=next(iter(audio.get(example["key"], {}).values()), None),
                     )
                     for example in sense["examples"]
                     if example["key"] not in hidden
@@ -164,7 +184,7 @@ def project_card(
         provisional=bool(doc.get("provisional")),
         variety=variety,
         pronunciations=[
-            CardPronunciation(variety=p["variety"], ipa=p["ipa"])
+            CardPronunciation(variety=p["variety"], ipa=p["ipa"], audio_url=_spoken(doc, p, audio))
             for p in doc.get("pronunciations") or []
         ],
         variants=[variant["form"] for variant in doc.get("variants") or []],

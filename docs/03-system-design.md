@@ -519,7 +519,7 @@ Input: the selected text, its sentence (≤ 500 characters) and the selection of
 - `GET /v1/entries/{key}?variety=es-419` builds an **EntryCard** from `doc`:
   - keep only the requested L1 layer [LK-9];
   - remove content hidden in `content_flags`;
-  - add audio URLs and the frequency band.
+  - add the frequency band and the audio links: `pronunciations[].audio_url` and `senses[].examples[].audio_url`, null until the file is uploaded (§10.4). The ETag also changes when audio arrives, which doesn't change the content version.
 - Cards are **not personalized**. "Saved" state comes from `/v1/me/saved`, which the plugin caches, so cards are shareable and cacheable.
 - **Caching:** an in-process LRU keyed by `(key, variety, content_version, flags_version)`. `ETag = "{content_version}.{flags_version}"`, with `Cache-Control: private, max-age=300` and `If-None-Match` answered with a 304.
 - **Pattern refresh:** the `Matcher` and other in-memory indexes reload on publish via Postgres `LISTEN/NOTIFY` (channel `content_changed`).
@@ -1066,11 +1066,17 @@ Exit criteria: all four work on BBB 4.0, or a fallback is documented.
 
 ### 10.4 Audio (Kokoro-82M, Apache-2.0)
 
-- **Input:** the IPA from the document, converted to Kokoro's phoneme set and validated per variety, so audio follows the IPA exactly [ADR-013].
-- **Voices:** en-US (one female, one male) and en-GB (one voice).
-  - Headwords: every pronunciation.
-  - Examples: en-US.
-- **Encoding:** 24 kHz output → AAC 48 kbps mono `.m4a` via ffmpeg.
+- **Input:**
+  - **Headwords:** the document's IPA, converted to Kokoro's phoneme alphabet (misaki's 45 English symbols per variety) and validated, so audio follows the IPA exactly [ADR-013]. The converter (`audio/phonemes.py`) handled every one of the 135,166 US and 16,205 UK reference pronunciations. A symbol it doesn't know is reported, never guessed.
+    - **Stress marks move from the syllable's start to its vowel** (`ˈkʌmfərtəbəl` → `kˈʌmfəɹtəbəl`), as misaki writes them, and a word with no mark gets one before its first vowel. A mark left in front of a consonant made Kokoro add a stray vowel ("e-comfortable"). The waveforms showed it, and showed it gone after the fix.
+  - **Examples:** they have no IPA. espeak-ng phonemizes the text, and misaki's own conversion rules turn its symbols into Kokoro's. misaki itself doesn't run on Python 3.13.
+- **Voices:** Kokoro's best-rated voice per accent: `af_heart` (en-US) and `bf_emma` (en-GB).
+  - Headwords: every pronunciation, in its variety's voice.
+  - Examples: `af_heart`, since examples are US English.
+- **Engine and encoding (built, `backend/src/smart_dictionary/audio/`):**
+  - Kokoro v1.0 through ONNX Runtime on the CPU. The model files come from kokoro-onnx's release, and are checked against their SHA-256.
+  - The 24 kHz output gets 0.15 s of silence before and 0.25 s after, is peak-normalized to −1 dBFS, then encoded with PyAV to AAC 48 kbps mono `.m4a` with faststart.
+  - A word is about 6–8 KB, an example about 20 KB.
 - **Storage layout:** one folder per entry, and one file per thing said, with the content's hash in its name:
 
   ```
@@ -1092,8 +1098,14 @@ Exit criteria: all four work on BBB 4.0, or a fallback is documented.
   - A private, versioned S3 bucket, read only by a CloudFront distribution through Origin Access Control. The distribution answers on its default `*.cloudfront.net` address, and SSM holds it as `AUDIO_BASE_URL`, with the bucket as `AUDIO_BUCKET`.
   - **CORS for any origin, on every response.** A CloudFront response-headers policy adds the CORS headers, so a copy cached from a plain `<audio>` request still works for a later `fetch()`. S3's own CORS rule answers preflights.
   - **Delivery settings:** HTTPS only, HTTP/2 and 3, IPv6. The full price class, because only it includes the South American edge locations. A missing file is a 403, cached for 30 seconds.
-  - **Still open, for the TTS job:** who uploads. The API's containers can't use the host's AWS role, by design (IMDSv2 hop limit 1).
-- **Scheduling:** worker queue `batch` with concurrency 1, preferring night hours. For scale: 5k entries is about 10k headword files plus about 15k example files *(estimate)*.
+- **The job (built, `audio/sync.py`, `smart-dictionary audio sync | loop`):**
+  - **What it compares:** each published entry against its `audio_assets` rows. A file is made when its row is missing or names another file, that is, when the IPA, the text, the voice or the engine changed. Provisional entries wait, because the routine rewrites them within the hour.
+  - **Production:** the `audio` container (`deploy/compose.yaml`) runs `audio loop`. It takes at most one CPU core and 1.5 GB, so lookups keep the other core. The model lives in the `kokoro_models` volume.
+  - **Pace:** the factory publishes about 40 entries an hour, which is roughly 15 minutes of audio. One core keeps pace, so no separate backfill machine is needed. A big backlog can still be split across processes with `--shard i/n`. The container logs each pass's real-time factor.
+- **Uploads (built, `deploy/audio-upload.sh`):**
+  - **No AWS credentials in containers:** the API's containers can't use the host's AWS role, by design (IMDSv2 hop limit 1). So the container writes files to an outbox folder, and a host timer uploads them every minute with the host's role. That role may only add files under `v1/`.
+  - **Receipts:** each upload leaves a receipt, `<file>.done`. The next pass of the job turns it into the row's `uploaded_at`, and only then does the card link the file.
+  - **Lost files:** a file neither uploaded nor waiting after a day is forgotten, so it's made again.
 
 ---
 

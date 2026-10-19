@@ -5,10 +5,13 @@ instead of surfacing later as a runtime error against a placeholder.
 """
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal, Self
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from smart_dictionary.paths import DATA_DIR
 
 DATABASE_SCHEME = "postgresql+psycopg://"
 
@@ -37,6 +40,13 @@ class Settings(BaseSettings):
     # The monthly cap on paid providers [OP-2]: an alert at 80%, and at 100% only the free
     # provider answers until the month rolls over.
     ai_monthly_budget_usd: float = Field(default=5.0, ge=0)
+    # Audio (design §10.4). Cards link uploaded files under audio_base_url (the CDN, from
+    # SSM). The audio job reads Kokoro from audio_model_dir, writes files to audio_outbox for
+    # the host's uploader, and can be held to a few CPU threads.
+    audio_base_url: str | None = None
+    audio_model_dir: Path = DATA_DIR / "cache" / "kokoro"
+    audio_outbox: Path = DATA_DIR / "cache" / "audio-outbox"
+    audio_threads: int | None = Field(default=None, ge=1)
 
     @field_validator("database_url")
     @classmethod

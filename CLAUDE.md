@@ -43,6 +43,7 @@ uv run smart-dictionary seeds export       # the ranked candidates, to data/raw/
 uv run smart-dictionary seeds queue --dry-run --limit 20   # what would be queued next, by priority
 uv run smart-dictionary factory token --name routine       # a factory bearer token, shown once
 uv run smart-dictionary factory status     # entries by status, the pace, and the recent runs
+uv run --group audio smart-dictionary audio sync   # voice what published entries lack, into the outbox
 uv run smart-dictionary db app-role        # new password for the API's role; prints its DATABASE_URL
 uv run smart-dictionary api                # http://127.0.0.1:8000
 ```

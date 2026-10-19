@@ -178,6 +178,51 @@ def _db_app_role(role: str) -> None:
     print(url)
 
 
+def _audio(action: str, limit: int | None, shard: str, every: int) -> None:
+    """Voice what published entries lack: once (sync), or forever (loop, the container)."""
+    import time
+
+    from smart_dictionary.audio.engine import Speaker
+    from smart_dictionary.audio.sync import Outbox, Report, sync
+    from smart_dictionary.core.settings import get_settings
+    from smart_dictionary.db.sync import connect
+
+    settings = get_settings()
+    index, _, count = shard.partition("/")
+    part = (int(index), int(count or 1))
+    speaker = Speaker(settings.audio_model_dir, settings.audio_threads)
+    outbox = Outbox(settings.audio_outbox)
+
+    def show(report: Report) -> None:
+        print(f"audio: {report.made} files made so far", file=sys.stderr, flush=True)
+
+    seen: set[str] = set()
+    while True:
+        # A loop pass stops after a hundred files, so uploads get confirmed as it goes.
+        started = time.monotonic()
+        with connect() as conn:
+            report = sync(conn, speaker, outbox, limit=limit if action == "sync" else 100,
+                          shard=part, progress=show if action == "sync" else None)  # fmt: skip
+        took = time.monotonic() - started
+        # Each problem once: a pronunciation the converter can't read stays unreadable.
+        for problem in report.problems:
+            if problem not in seen:
+                seen.add(problem)
+                print(f"  {problem}", file=sys.stderr, flush=True)
+        if action == "sync" or report.made or report.confirmed or report.lost:
+            speed = f", x{report.audio_ms / 1000 / took:.1f} real time" if report.made else ""
+            print(
+                f"made {report.made} files ({report.audio_ms / 1000:.0f} s of audio in "
+                f"{took:.0f} s{speed}), confirmed {report.confirmed} uploads, "
+                f"forgot {report.lost} lost files",
+                flush=True,
+            )
+        if action == "sync":
+            return
+        if report.made == 0:
+            time.sleep(every)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="smart-dictionary")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -228,6 +273,12 @@ def main(argv: list[str] | None = None) -> None:
     db.add_argument("action", choices=["app-role"], help="new password for the API's role")
     db.add_argument("--role", default="dictionary_app")
 
+    audio = commands.add_parser("audio", help="pronunciation and example audio (Kokoro)")
+    audio.add_argument("action", choices=["sync", "loop"])
+    audio.add_argument("--limit", type=int, help="sync: stop after this many files")
+    audio.add_argument("--shard", default="0/1", help="sync: i/n, this process's share")
+    audio.add_argument("--every", type=int, default=60, help="loop: seconds to wait when idle")
+
     args = parser.parse_args(argv)
     if args.command == "api":
         _api(args.host, args.port, args.reload)
@@ -247,3 +298,5 @@ def main(argv: list[str] | None = None) -> None:
         _factory(args.action, args.name, args.runs)
     elif args.command == "db":
         _db_app_role(args.role)
+    elif args.command == "audio":
+        _audio(args.action, args.limit, args.shard, args.every)

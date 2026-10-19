@@ -32,6 +32,10 @@ dev = [
 data = [
     "wordfreq>=3.1",
 ]
+audio = [
+    "av>=14",
+    "kokoro-onnx>=0.6.1",
+]
 
 [tool.uv]
 default-groups = ["dev", "data"]
@@ -63,6 +67,7 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 "tests/**" = ["RUF001"]
 # IPA symbols (ɑ, ʊ, ʃ…) are the data here, not look-alike typos.
 "src/smart_dictionary/importers/phonetics.py" = ["RUF001", "RUF002"]
+"src/smart_dictionary/audio/phonemes.py" = ["RUF001", "RUF002", "RUF003"]
 "src/smart_dictionary/importers/sources.py" = ["RUF002"]
 "src/smart_dictionary/factory/validate.py" = ["RUF001", "RUF002"]
 
