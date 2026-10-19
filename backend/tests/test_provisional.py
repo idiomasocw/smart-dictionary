@@ -1,5 +1,6 @@
 """Missing words become provisional entries (design §6.5) [LK-10]: the lookup answers at once,
-and the entry it schedules is there when the student asks again."""
+and the entry it schedules is there when the student asks again. A search in Spanish finds the
+English word it means."""
 
 import copy
 from dataclasses import dataclass, field
@@ -33,31 +34,44 @@ KETTLE: dict[str, Any] = {
     ],
 }
 NOT_A_WORD = {"verdict": "not_a_word", "lemma": None, "pos": None, "kind": None, "senses": []}
+TETERA = {"verdict": "found", "headwords": [{"lemma": "kettle", "pos": "noun", "kind": "word"}]}
 
 
 @dataclass
 class Model:
-    """A stand-in for the AI: every call returns the same draft."""
+    """A stand-in for the AI: the same draft for every provisional_entry call, and the same
+    translation for every translate_query call (told apart by the schema asked for)."""
 
     draft: dict[str, Any]
+    translation: dict[str, Any] | None = None
     name: str = "anthropic"
     model: str = "claude-haiku-5-5"
     paid: bool = True
-    calls: int = field(default=0)
+    asked: list[str] = field(default_factory=list)
+    questions: list[str] = field(default_factory=list)
+
+    @property
+    def calls(self) -> int:
+        return len(self.asked)
 
     def complete(self, system: str, user: str, schema: dict[str, Any], max_tokens: int) -> Reply:
-        self.calls += 1
-        return Reply(copy.deepcopy(self.draft), self.model, 900, 300)
+        translating = "headwords" in schema["properties"]
+        self.asked.append("translate_query" if translating else "provisional_entry")
+        self.questions.append(user)
+        answer = self.translation if translating else self.draft
+        assert answer is not None
+        return Reply(copy.deepcopy(answer), self.model, 900, 300)
 
 
 def kettle_world() -> None:
     with connect() as conn:
         world(conn)
-        for word, zipf in (("kettle", 3.4), ("kettles", 2.6)):
+        for language, word, zipf in (("en", "kettle", 3.4), ("en", "kettles", 2.6),
+                                     ("es", "tetera", 2.6)):  # fmt: skip
             conn.execute(
                 "insert into ref_freq (dataset_id, language, word, zipf)"
-                " values ('t-freq', 'en', %s, %s)",
-                (word, zipf),
+                " values ('t-freq', %s, %s, %s)",
+                (language, word, zipf),
             )
         for variety, ipa in (("en-US", "ˈkɛtəl"), ("en-GB", "ˈketl")):
             conn.execute(
@@ -127,27 +141,35 @@ def test_the_lookup_decides_without_ai(migrated_database_url, anyio_backend_opti
         assert lookup(api, "porn")["provisional"]["status"] == "invalid"
         five_words = "kettle kettle kettle kettle kettle"
         assert lookup(api, five_words)["provisional"]["status"] == "invalid"
-        assert lookup(api, "kettle", dir="l1")["provisional"] is None
+        # A search in Spanish takes the Spanish path, whose gate knows no "kettle".
+        assert lookup(api, "kettle", dir="l1")["provisional"]["status"] == "invalid"
+        # Only Spanish has a path so far.
+        assert lookup(api, "kettle", dir="l1", variety="pt-BR")["provisional"] is None
     with client(anyio_backend_options, Gateway([], 5.0)) as api:
         assert lookup(api, "kettles")["provisional"]["status"] == "unavailable"
     assert model.calls == 0
 
 
-def test_each_student_starts_at_most_ten_a_day(migrated_database_url, anyio_backend_options):
+def test_each_student_sends_at_most_ten_searches_a_day(
+    migrated_database_url, anyio_backend_options
+):
     kettle_world()
     with connect() as conn:
         user = conn.execute(
             "insert into users (tenant_id, external_id) values ('ocw', 'person-1') returning id"
         ).fetchone()
-        for _ in range(10):
+        # Searches count, not calls: these 12 calls are 10 searches, of both kinds.
+        for number in range(12):
+            task = "translate_query" if number % 2 else "provisional_entry"
             conn.execute(
-                "insert into llm_calls (task, provider, model, prompt_version, outcome, user_id)"
-                " values ('provisional_entry', 'anthropic', 'm', 'v', 'ok', %s)",
-                (user[0] if user else None,),
+                "insert into llm_calls (task, provider, model, prompt_version, outcome,"
+                " user_id, ref_key) values (%s, 'anthropic', 'm', 'v', 'ok', %s, %s)",
+                (task, user[0] if user else None, f"word{min(number, 9)}"),
             )
-    model = Model(KETTLE)
+    model = Model(KETTLE, TETERA)
     with client(anyio_backend_options, Gateway([model], 5.0)) as api:
         assert lookup(api, "kettles")["provisional"]["status"] == "quota_exceeded"
+        assert lookup(api, "tetera")["provisional"]["status"] == "quota_exceeded"
     assert model.calls == 0
 
 
@@ -203,3 +225,75 @@ def test_the_factorys_entries_are_never_replaced(migrated_database_url, anyio_ba
     assert row("select status::text, priority from entries where key = 'en:kettle:n'") == (
         "provisional", 7,
     )  # fmt: skip
+
+
+def test_a_spanish_search_finds_its_english_word(migrated_database_url, anyio_backend_options):
+    kettle_world()
+    model = Model(KETTLE, TETERA)
+    with client(anyio_backend_options, Gateway([model], 5.0)) as api:
+        assert lookup(api, "Tetera")["provisional"]["status"] == "generating"
+        # The draft lists the student's Spanish, so the next search reaches it directly.
+        [group] = lookup(api, "tetera")["groups"]
+        [item] = group["items"]
+        assert (group["side"], item["entry_key"], item["provisional"]) == (
+            "l1", "en:kettle:n", True,
+        )  # fmt: skip
+        assert item["matched"] == {"via": "equivalent", "text": "tetera"}
+    assert model.asked == ["translate_query", "provisional_entry"]
+    assert "«Tetera»" in model.questions[1]  # the draft is asked for that meaning
+    terms = row("select array_agg(term order by rank) from equivalents"
+                " where sense_key = 'en:kettle:n#1'")  # fmt: skip
+    assert terms == (["hervidor", "tetera"],)
+    assert row("select status, entry_key from misses where language = 'es'") == (
+        "provisional", "en:kettle:n",
+    )  # fmt: skip
+    # Two calls, one search.
+    assert row("select count(*), count(distinct ref_key), min(ref_key) from llm_calls") == (
+        2, 1, "tetera",
+    )  # fmt: skip
+
+
+def test_a_spanish_search_for_a_live_word_points_to_it(
+    migrated_database_url, anyio_backend_options
+):
+    kettle_world()
+    model = Model(KETTLE, TETERA)
+    with client(anyio_backend_options, Gateway([model], 5.0)) as api:
+        lookup(api, "kettles")  # an English search drafts the entry first
+        assert lookup(api, "tetera", dir="l1")["provisional"]["status"] == "generating"
+        # Live already, without "tetera" among its equivalents: the miss points to it.
+        assert lookup(api, "tetera", dir="l1")["provisional"] == {
+            "status": "ready", "entry_key": "en:kettle:n", "retry_after_ms": None,
+        }  # fmt: skip
+    assert model.asked == ["provisional_entry", "translate_query"]
+
+
+def test_misses_take_the_path_of_their_language(migrated_database_url, anyio_backend_options):
+    kettle_world()
+    model = Model(KETTLE, {"verdict": "none", "headwords": []})
+    with client(anyio_backend_options, Gateway([model], 5.0)) as api:
+        lookup(api, "kettles")  # reads as English
+        lookup(api, "tetera")  # reads as Spanish
+        # Turned down: settled, so the next search answers without a call.
+        assert lookup(api, "tetera")["provisional"]["status"] == "invalid"
+    assert model.asked == ["provisional_entry", "translate_query"]
+    with connect() as conn:
+        misses = conn.execute("select language, query_norm, status from misses order by 1")
+        assert misses.fetchall() == [
+            ("en", "kettles", "provisional"), ("es", "tetera", "invalid"),
+        ]  # fmt: skip
+
+
+def test_one_job_per_query_at_a_time(migrated_database_url, anyio_backend_options):
+    kettle_world()
+    model = Model(KETTLE, TETERA)
+    lock = "select pg_advisory_lock(hashtextextended('provisional:ocw:es:tetera', 0))"
+    with connect() as holder:
+        # Another request is handling "tetera": this one's job leaves it alone.
+        holder.execute(lock)
+        with client(anyio_backend_options, Gateway([model], 5.0)) as api:
+            assert lookup(api, "tetera")["provisional"]["status"] == "generating"
+        assert model.calls == 0
+    with client(anyio_backend_options, Gateway([model], 5.0)) as api:
+        assert lookup(api, "tetera")["provisional"]["status"] == "generating"
+    assert model.asked == ["translate_query", "provisional_entry"]

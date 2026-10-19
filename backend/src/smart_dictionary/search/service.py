@@ -208,8 +208,10 @@ async def log_lookup(
     groups: list[LookupGroup],
     did_you_mean: list[Suggestion],
     latency_ms: int,
+    miss_language: str | None = None,
 ) -> None:
-    """Record the lookup [OP-1]; a lookup with no result at all also counts as a miss [LK-10]."""
+    """Record the lookup [OP-1]; a lookup with no result at all also counts as a miss [LK-10],
+    under `miss_language` when the missing-word flow has routed it (ai.provisional)."""
     top = groups[0].items[0] if groups else None
     result = "hit" if groups else ("invalid" if not query.norm_en else "miss")
     await conn.execute(
@@ -226,7 +228,7 @@ async def log_lookup(
         },
     )
     if result == "miss" and not did_you_mean:
-        language = query.language if query.direction == "l1" else "en"
+        language = miss_language or (query.language if query.direction == "l1" else "en")
         normalized = query.norm_l1 if language != "en" else query.norm_en
         await conn.execute(
             LOG_MISS, {"tenant": principal.tenant, "language": language, "q": normalized}

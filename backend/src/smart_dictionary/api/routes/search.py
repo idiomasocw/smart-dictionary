@@ -56,14 +56,17 @@ async def lookup(
     started = time.perf_counter()
     query = _query(q, direction, variety or settings.default_variety)
     groups, did_you_mean = await service.lookup(conn, query)
-    status = None
+    status = language = None
     if not groups:
         # Decided with SQL only; any AI work runs after the response (NF-1).
-        status, job = await provisional.on_miss(conn, principal, query, gateway)
+        language = await provisional.searched_in(conn, query)
+        status, job = await provisional.on_miss(conn, principal, query, gateway, language)
         if job is not None:
             background.add_task(provisional.generate, job, gateway)
     latency_ms = round((time.perf_counter() - started) * 1000)
-    await service.log_lookup(conn, principal, query, groups, did_you_mean, latency_ms)
+    await service.log_lookup(
+        conn, principal, query, groups, did_you_mean, latency_ms, miss_language=language
+    )
     return LookupResponse(
         query=_echo(query), groups=groups, did_you_mean=did_you_mean, provisional=status
     )

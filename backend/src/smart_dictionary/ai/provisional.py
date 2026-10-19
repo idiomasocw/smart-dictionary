@@ -1,17 +1,23 @@
 """Missing words become provisional entries (design §6.5) [LK-10, CG-4].
 
-A lookup that finds nothing still answers at once: lookups never wait on AI (NF-1). When
-the query is plausible English, the lookup schedules one generation to run after its
-response and tells the plugin "generating". Asking again a moment later finds the new
-entry, marked provisional. The routine leases provisional entries first and replaces each
-with a full entry under the same key.
+A lookup that finds nothing still answers at once: lookups never wait on AI (NF-1). When the
+query is worth it, the lookup schedules one AI job to run after its response and tells the
+plugin "generating". Asking again a moment later finds the entry, marked provisional. The
+routine leases provisional entries first and replaces each with a full entry, same key.
+
+A miss takes one of two paths, by the language it was searched in:
+- **English:** the provisional_entry task drafts the missing word.
+- **Spanish** (dir=l1, or dir=auto when every word reads as Spanish): the translate_query task
+  names the English headwords the student means. If the best one is live already, the miss
+  points to it. Otherwise it's drafted as above, with the student's Spanish among its
+  equivalents, so the next search finds it directly.
 
 1. **Gate**, in the lookup, SQL only:
-   - every word is known English (wordfreq or Wiktionary) and none is blocked;
+   - every word is known in the query's language and none is blocked;
    - the miss isn't settled already;
-   - the student has generations left today.
-2. **Dedupe:** an advisory lock per query, so students asking at once cause one AI call.
-3. **Generate:** the gateway's provisional_entry task drafts one or two senses.
+   - the student has searches left today.
+2. **Dedupe:** an advisory lock per query, so students asking at once cause one AI job.
+3. **Generate** through the gateway.
 4. **Check and publish:**
    - the factory's checks, with the counts of a short entry (V11);
    - the draft must be for the word asked;
@@ -43,14 +49,20 @@ from smart_dictionary.search.service import Query
 
 log = logging.getLogger(__name__)
 
-QUOTA_PER_DAY = 10  # generations a student can start in 24 hours (design §7.1)
+# Missed searches a student can send to AI in 24 hours (design §7.1). A Spanish search counts
+# once, though it may take a translation and a draft.
+QUOTA_PER_DAY = 10
+AI_TASKS = ["provisional_entry", "translate_query"]
 MIN_ZIPF = 1.0  # wordfreq knows the word at least this well
 MAX_WORDS = 4
 RETRY_AFTER_MS = 1500
 CEFR_ORDER = ["A1", "A2", "B1", "B2", "C1", "C2"]
 # Entry statuses a provisional entry may take over: nobody has written the word yet.
 REPLACEABLE = ("candidate", "queued")
+# What a miss becomes when the factory already holds its entry.
+HELD = {"published": "published", "provisional": "provisional", "retired": "invalid"}
 
+Language = Literal["en", "es"]
 Status = Literal["generating", "ready", "queued", "invalid", "quota_exceeded", "unavailable"]
 # A settled miss, as the lookup reports it.
 MISS_STATUS: dict[str, Status] = {
@@ -85,7 +97,7 @@ class DraftSense(BaseModel):
 
 
 class Draft(BaseModel):
-    """What the model answers: a verdict on the query, and for an entry its senses."""
+    """The provisional_entry answer: a verdict on the word, and for an entry its senses."""
 
     verdict: Literal["entry", "not_english", "not_a_word", "unsuitable"]
     lemma: str | None = Field(default=None, max_length=80)
@@ -94,13 +106,33 @@ class Draft(BaseModel):
     senses: list[DraftSense] = Field(default_factory=list, max_length=2)
 
 
-PROMPT = Path(__file__).parent / "prompts" / "provisional_entry.v1.md"
+class Headword(BaseModel):
+    lemma: str = Field(max_length=80)
+    pos: POS
+    kind: Kind
+
+
+class Translation(BaseModel):
+    """The translate_query answer: the English headwords a Spanish search means, best first."""
+
+    verdict: Literal["found", "none"]
+    headwords: list[Headword] = Field(default_factory=list, max_length=3)
+
+
+PROMPTS = Path(__file__).parent / "prompts"
 PROVISIONAL = Task(
     name="provisional_entry",
-    prompt_version=PROMPT.stem,
-    system=PROMPT.read_text(encoding="utf-8"),
+    prompt_version="provisional_entry.v1",
+    system=(PROMPTS / "provisional_entry.v1.md").read_text(encoding="utf-8"),
     output=Draft,
     max_tokens=900,
+)
+TRANSLATE = Task(
+    name="translate_query",
+    prompt_version="translate_query.v1",
+    system=(PROMPTS / "translate_query.v1.md").read_text(encoding="utf-8"),
+    output=Translation,
+    max_tokens=200,
 )
 
 
@@ -109,20 +141,32 @@ class Job:
     query: str  # normalized
     tenant: str
     user_id: uuid.UUID | None
+    language: Language = "en"  # the language the student searched in
+    typed: str = ""  # the query as typed: a Spanish one becomes an equivalent
+    variety: str = "es-419"
 
 
 # 1. The gate, in the lookup -----------------------------------------------------------------
 
 KNOWN = text("""
 select w from unnest(cast(:words as text[])) as w
-where exists (select 1 from ref_freq f where f.language = 'en' and f.word = w and f.zipf >= :zipf)
-   or exists (select 1 from ref_wiktionary k where k.word_norm = w)
-   or exists (select 1 from ref_forms o where o.language = 'en' and o.form_norm = w)
+where exists (select 1 from ref_freq f
+              where f.language = :language and f.word = w and f.zipf >= :zipf)
+   or exists (select 1 from ref_forms o where o.language = :language and o.form_norm = w)
+   or (cast(:language as text) = 'en'
+       and exists (select 1 from ref_wiktionary k where k.word_norm = w))
+""")
+
+# Each word's frequency in Spanish and in English.
+LANGUAGES = text("""
+select coalesce((select max(zipf) from ref_freq where language = 'es' and word = w), 0),
+       coalesce((select max(zipf) from ref_freq where language = 'en' and word = w), 0)
+from unnest(cast(:words as text[])) as w
 """)
 
 MISS = text("""
 select status, entry_key from misses
-where tenant_id = :tenant and language = 'en' and query_norm = :q
+where tenant_id = :tenant and language = :language and query_norm = :q
 """)
 
 STUDENT = text("""
@@ -137,52 +181,77 @@ select id from users where tenant_id = :tenant and external_id = :subject
 limit 1
 """)
 
+# Searches, not calls: every call for a search carries its query as ref_key.
 USED_TODAY = text("""
-select count(*) from llm_calls
-where task = 'provisional_entry' and user_id = :user and outcome in ('ok', 'fallback')
-  and created_at > now() - interval '1 day'
+select count(distinct ref_key) from llm_calls
+where task = any(cast(:tasks as text[])) and user_id = :user
+  and outcome in ('ok', 'fallback') and created_at > now() - interval '1 day'
 """)
 
 # Hits stay with the lookup log (search.service), which counts misses without suggestions.
 ADD_MISS = text("""
-insert into misses (tenant_id, language, query_norm, hits) values (:tenant, 'en', :q, 0)
+insert into misses (tenant_id, language, query_norm, hits) values (:tenant, :language, :q, 0)
 on conflict (tenant_id, language, query_norm) do nothing
 """)
 
 
 async def on_miss(
-    conn: AsyncConnection, principal: Principal, query: Query, gateway: Gateway
+    conn: AsyncConnection,
+    principal: Principal,
+    query: Query,
+    gateway: Gateway,
+    language: Language | None,
 ) -> tuple[ProvisionalStatus | None, Job | None]:
-    """What a lookup that found nothing does, decided without AI. The Job, if any, is the
-    generation to run once the response has gone; the caller's transaction commits it."""
-    if not query.wants_en:
-        return None, None  # a search in the student's own language
-    q = query.norm_en
+    """What a lookup that found nothing does, decided without AI; `language` is where
+    searched_in() routed it. The Job, if any, is the work to run once the response has gone;
+    the caller's transaction commits the rest."""
+    if language is None:
+        return None, None  # a student language with no AI path yet
+    q = query.norm_l1 if language == "es" else query.norm_en
     words = q.split()
     if not words:
         return None, None
     if len(words) > MAX_WORDS or BLOCKED.intersection(words):
         return ProvisionalStatus(status="invalid"), None
-    known = {row[0] for row in await conn.execute(KNOWN, {"words": words, "zipf": MIN_ZIPF})}
-    if not known.issuperset(words):
+    params = {"words": words, "zipf": MIN_ZIPF, "language": language}
+    if not {row[0] for row in await conn.execute(KNOWN, params)}.issuperset(words):
         return ProvisionalStatus(status="invalid"), None
-    miss = (await conn.execute(MISS, {"tenant": principal.tenant, "q": q})).first()
+    params = {"tenant": principal.tenant, "language": language, "q": q}
+    miss = (await conn.execute(MISS, params)).first()
     if miss is not None and miss.status != "pending":
         return ProvisionalStatus(status=MISS_STATUS[miss.status], entry_key=miss.entry_key), None
     if not gateway.configured:
         return ProvisionalStatus(status="unavailable"), None
     user_id = None
     if principal.subject:
-        params = {"tenant": principal.tenant, "subject": principal.subject}
-        user_id = (await conn.execute(STUDENT, params)).scalar_one()
-        if (await conn.execute(USED_TODAY, {"user": user_id})).scalar_one() >= QUOTA_PER_DAY:
+        student = {"tenant": principal.tenant, "subject": principal.subject}
+        user_id = (await conn.execute(STUDENT, student)).scalar_one()
+        used = (await conn.execute(USED_TODAY, {"tasks": AI_TASKS, "user": user_id})).scalar_one()
+        if used >= QUOTA_PER_DAY:
             return ProvisionalStatus(status="quota_exceeded"), None
-    await conn.execute(ADD_MISS, {"tenant": principal.tenant, "q": q})
-    status = ProvisionalStatus(status="generating", retry_after_ms=RETRY_AFTER_MS)
-    return status, Job(query=q, tenant=principal.tenant, user_id=user_id)
+    await conn.execute(ADD_MISS, params)
+    job = Job(query=q, tenant=principal.tenant, user_id=user_id, language=language,
+              typed=query.raw, variety=query.variety)  # fmt: skip
+    return ProvisionalStatus(status="generating", retry_after_ms=RETRY_AFTER_MS), job
 
 
-# 2-4. The generation, after the response ----------------------------------------------------
+async def searched_in(conn: AsyncConnection, query: Query) -> Language | None:
+    """The language a missed search was made in, which picks its path: Spanish for a search
+    in Spanish (dir=l1), or a dir=auto one whose every word is known in Spanish and at least as
+    common there as in English; English for the rest. None for a search in another student
+    language, which has no path yet."""
+    spanish_student = query.language == "es"
+    if query.direction == "l1":
+        return "es" if spanish_student else None
+    words = query.norm_l1.split()
+    if query.direction == "auto" and spanish_student and words:
+        rows = (await conn.execute(LANGUAGES, {"words": words})).all()
+        if all(float(es) >= MIN_ZIPF and float(es) >= float(en) for es, en in rows):
+            return "es"
+    return "en"
+
+
+# 2-4. The work, after the response ----------------------------------------------------------
 
 
 def generate(job: Job, gateway: Gateway) -> None:
@@ -190,121 +259,216 @@ def generate(job: Job, gateway: Gateway) -> None:
     pending, so a later lookup tries again; it never reaches the student."""
     try:
         with connect() as conn:
-            # Held until the connection closes, so one request writes the word at a time.
-            lock = f"provisional:{job.tenant}:{job.query}"
+            # Held until the connection closes, so one request handles the query at a time.
+            lock = f"provisional:{job.tenant}:{job.language}:{job.query}"
             locked = conn.execute("select pg_try_advisory_lock(hashtextextended(%s, 0))",
                                   (lock,)).fetchone()  # fmt: skip
             conn.commit()
-            if locked and locked[0]:
-                _generate(conn, job, gateway)
+            if not (locked and locked[0]) or not _pending(conn, job):
+                return  # being handled, or settled while this job waited
+            if job.language == "es":
+                _spanish(conn, job, gateway)
+            else:
+                _english(conn, job, gateway)
     except Exception:
         log.exception("the provisional entry for %r failed", job.query)
 
 
-def _generate(conn: psycopg.Connection, job: Job, gateway: Gateway) -> None:
-    pending = conn.execute(
-        "select status from misses where tenant_id = %s and language = 'en' and query_norm = %s",
-        (job.tenant, job.query),
-    ).fetchone()
-    if pending is None or pending[0] != "pending":
-        return  # settled while this job waited
-    try:
-        answer = gateway.run(conn, PROVISIONAL, _facts(conn, job.query), cache_key=job.query,
-                             tenant=job.tenant, user_id=job.user_id, ref_key=job.query)  # fmt: skip
-    except Unavailable:
-        conn.commit()  # keep the logged attempts
-        log.warning("no AI provider could write %r", job.query)
+def _english(conn: psycopg.Connection, job: Job, gateway: Gateway) -> None:
+    answer = _ask(conn, gateway, PROVISIONAL, _facts(conn, job.query), job, job.query)
+    if answer is None:
         return
-    conn.commit()
-    draft = answer.value
-    if draft.verdict != "entry":
+    if answer.value.verdict != "entry":
         _settle(conn, job, "invalid", None)
         gateway.remember(conn, PROVISIONAL, job.query, answer)
         conn.commit()
         return
-    raw = _document(conn, draft)
+    _check_and_publish(conn, job, gateway, answer, job.query, job.query)
+
+
+def _spanish(conn: psycopg.Connection, job: Job, gateway: Gateway) -> None:
+    question = f"Spanish query: {job.typed or job.query}\nThe student's Spanish: {job.variety}"
+    translated_key = f"{job.variety}:{job.query}"
+    translation = _ask(conn, gateway, TRANSLATE, question, job, translated_key)
+    if translation is None:
+        return
+    gateway.remember(conn, TRANSLATE, translated_key, translation)
+    best = _best(translation.value)
+    if best is None:
+        _settle(conn, job, "invalid", None)
+        conn.commit()
+        return
+    headword, key = best
+    current = conn.execute("select status::text from entries where key = %s", (key,)).fetchone()
+    if current is not None and current[0] not in REPLACEABLE:
+        # Live already (ready), or the factory is writing it: the miss points there.
+        _settle(conn, job, HELD.get(current[0], "queued"), key)
+        conn.commit()
+        return
+    conn.commit()
+    word = norm(headword.lemma)
+    drafted_key = f"{word}\nfor es:{job.query}"
+    facts = _facts(conn, word, spanish=job.typed or job.query, pos=headword.pos)
+    draft = _ask(conn, gateway, PROVISIONAL, facts, job, drafted_key)
+    if draft is None:
+        return
+    if draft.value.verdict != "entry":
+        log.warning("%r was translated as %r, which the draft turned down", job.query, word)
+        return
+    _with_equivalent(draft.value, job)
+    _check_and_publish(conn, job, gateway, draft, word, drafted_key)
+
+
+def _best(translation: Translation) -> tuple[Headword, str] | None:
+    """The first headword that makes a valid key."""
+    if translation.verdict != "found":
+        return None
+    for headword in translation.headwords:
+        key = _key(headword.lemma, headword.pos, headword.kind)
+        if key is not None:
+            return headword, key
+    return None
+
+
+def _with_equivalent(draft: Draft, job: Job) -> None:
+    """Make sure the student's Spanish is among the equivalents, so their next search reaches
+    the entry through it (the equivalents generator) instead of missing again."""
+    if any(norm(equivalent.term, "es") == job.query
+           for sense in draft.senses for equivalent in sense.equivalents):  # fmt: skip
+        return
+    if draft.senses:
+        term = " ".join((job.typed or job.query).split()).lower()
+        draft.senses[0].equivalents.append(DraftEquivalent(term=term, match="near"))
+
+
+def _ask[T: BaseModel](
+    conn: psycopg.Connection,
+    gateway: Gateway,
+    task: Task[T],
+    question: str,
+    job: Job,
+    cache_key: str,
+) -> Answer[T] | None:
+    """The task's answer, with the student's search as the call's ref_key (the quota counts
+    searches). None when no provider answered; the logged attempts are committed either way."""
+    try:
+        answer = gateway.run(conn, task, question, cache_key=cache_key, tenant=job.tenant,
+                             user_id=job.user_id, ref_key=job.query)  # fmt: skip
+    except Unavailable:
+        conn.commit()
+        log.warning("no AI provider answered %s for %r", task.name, job.query)
+        return None
+    conn.commit()
+    return answer
+
+
+def _check_and_publish(
+    conn: psycopg.Connection,
+    job: Job,
+    gateway: Gateway,
+    answer: Answer[Draft],
+    word: str,
+    cache_key: str,
+) -> None:
+    raw = _document(conn, answer.value)
     if raw is None:
-        log.warning("the draft for %r can't make an entry: %s", job.query, draft)
+        log.warning("the draft for %r can't make an entry: %s", word, answer.value)
         return
     entry = Entry(key=raw["key"], lemma=raw["lemma"], pos=raw["pos"], kind=raw["kind"])
     issues = validate(entry, raw, Context.load(conn, [entry], [raw]), provisional=True)
     errors = [issue for issue in issues if issue.severity == "error"]
     if errors:
-        log.warning("the draft for %r failed its checks: %s", job.query,
+        log.warning("the draft for %r failed its checks: %s", word,
                     "; ".join(f"{i.check} {i.where}: {i.message}" for i in errors))  # fmt: skip
         return
     doc = EntryDoc.model_validate(raw)
-    if job.query not in english_forms(doc):
-        log.warning("the draft for %r is about %r instead", job.query, doc.lemma)
+    if word not in english_forms(doc):
+        log.warning("the draft for %r is about %r instead", word, doc.lemma)
         return
-    _publish(conn, job, gateway, answer, doc, [asdict(issue) for issue in issues],
-             score(issues, None))  # fmt: skip
-
-
-def _publish(
-    conn: psycopg.Connection,
-    job: Job,
-    gateway: Gateway,
-    answer: Answer[Draft],
-    doc: EntryDoc,
-    issues: list[dict[str, Any]],
-    quality: float,
-) -> None:
     current = conn.execute(
         "select status::text from entries where key = %s for update", (doc.key,)
     ).fetchone()
     if current is not None and current[0] not in REPLACEABLE:
-        # The factory has the word (being written, or published already): point to it.
-        settled = {"published": "published", "provisional": "provisional", "retired": "invalid"}
-        _settle(conn, job, settled.get(current[0], "queued"), doc.key)
+        # The factory has the word (being written, or live already): point to it.
+        _settle(conn, job, HELD.get(current[0], "queued"), doc.key)
         conn.commit()
         return
-    produced_by = {"source": "provisional", "task": PROVISIONAL.name,
-                   "prompt": PROVISIONAL.prompt_version, "provider": answer.provider,
-                   "model": answer.model, "query": job.query}  # fmt: skip
-    publish(conn, doc, produced_by=produced_by, qa={"issues": issues}, quality=quality,
-            sources=["provisional"], status="provisional")  # fmt: skip
+    produced_by = {
+        "source": "provisional",
+        "task": PROVISIONAL.name,
+        "prompt": PROVISIONAL.prompt_version,
+        "provider": answer.provider,
+        "model": answer.model,
+        "query": job.query,
+        "searched_in": job.language,
+    }
+    publish(conn, doc, produced_by=produced_by, qa={"issues": [asdict(i) for i in issues]},
+            quality=score(issues, None), sources=["provisional"], status="provisional")  # fmt: skip
     _settle(conn, job, "provisional", doc.key)
-    gateway.remember(conn, PROVISIONAL, job.query, answer)
+    gateway.remember(conn, PROVISIONAL, cache_key, answer)
     conn.commit()
+
+
+def _pending(conn: psycopg.Connection, job: Job) -> bool:
+    row = conn.execute(
+        "select status from misses where tenant_id = %s and language = %s and query_norm = %s",
+        (job.tenant, job.language, job.query),
+    ).fetchone()
+    return row is not None and row[0] == "pending"
 
 
 def _settle(conn: psycopg.Connection, job: Job, status: str, key: str | None) -> None:
     conn.execute(
         "update misses set status = %s, entry_key = %s"
-        " where tenant_id = %s and language = 'en' and query_norm = %s",
-        (status, key, job.tenant, job.query),
+        " where tenant_id = %s and language = %s and query_norm = %s",
+        (status, key, job.tenant, job.language, job.query),
     )
 
 
-def _facts(conn: psycopg.Connection, query: str) -> str:
-    """The user turn: the query, and the open data's facts about it (hints, never prose)."""
+def _facts(
+    conn: psycopg.Connection, word: str, *, spanish: str | None = None, pos: str | None = None
+) -> str:
+    """The user turn: the word, and the open data's facts about it (hints, never prose). For
+    a Spanish search, what the student typed, so the draft covers that meaning."""
     zipf = conn.execute(
-        "select max(zipf) from ref_freq where language = 'en' and word = %s", (query,)
+        "select max(zipf) from ref_freq where language = 'en' and word = %s", (word,)
     ).fetchone()
     rows = conn.execute(
-        "select pos, glosses from ref_wiktionary where word_norm = %s order by pos", (query,)
+        "select pos, glosses from ref_wiktionary where word_norm = %s order by pos", (word,)
     ).fetchall()
     hints = list(dict.fromkeys(f"{pos}: {hint(gloss)}" for pos, glosses in rows
                                for gloss in glosses))[:MAX_HINTS]  # fmt: skip
-    lines = [f"Query: {query}", "", "Facts:"]
+    lines = [f"Query: {word}"]
+    if spanish:
+        lines.append(
+            f"A student searched in Spanish for «{spanish}», and the English {pos or 'word'}"
+            f" «{word}» is what they meant. One sense must have that meaning, and its"
+            f" equivalents must include «{spanish}»."
+        )
+    lines += ["", "Facts:"]
     if zipf and zipf[0] is not None:
         lines.append(f"- frequency on the Zipf scale (0-8): {float(zipf[0]):.1f}")
     lines += [f"- Wiktionary hint, {line}" for line in hints] or ["- no Wiktionary entry"]
     return "\n".join(lines)
 
 
+def _key(lemma: str, pos: str, kind: str) -> str | None:
+    """The entry key, or None when the parts can't make one (a single word with pos phrase)."""
+    try:
+        return entry_key("en", " ".join(lemma.split()), KIND_POS.get(kind, pos), kind)
+    except (KeyError, ValueError):
+        return None
+
+
 def _document(conn: psycopg.Connection, draft: Draft) -> dict[str, Any] | None:
     """The entry document for a draft, or None when the draft can't make a valid key."""
     if not (draft.lemma and draft.pos and draft.kind and draft.senses):
         return None
+    key = _key(draft.lemma, draft.pos, draft.kind)
+    if key is None:
+        return None
     lemma = " ".join(draft.lemma.split())
     kind = draft.kind
-    pos = KIND_POS.get(kind, draft.pos)
-    try:
-        key = entry_key("en", lemma, pos, kind)
-    except (KeyError, ValueError):  # a single word drafted as pos "phrase", for example
-        return None
     senses = []
     for number, sense in enumerate(draft.senses, start=1):
         key_n = sense_key(key, number)
@@ -329,7 +493,7 @@ def _document(conn: psycopg.Connection, draft: Draft) -> dict[str, Any] | None:
         "key": key,
         "language": "en",
         "lemma": lemma,
-        "pos": pos,
+        "pos": KIND_POS.get(kind, draft.pos),
         "kind": kind,
         "cefr": min((sense.cefr for sense in draft.senses), key=CEFR_ORDER.index),
         "pronunciations": _pronunciations(conn, lemma) if kind == "word" else [],

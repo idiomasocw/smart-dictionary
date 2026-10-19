@@ -22,7 +22,7 @@
  AWS us-east-2 · EC2 t4g.medium · Docker Compose              Supabase project (us-east-2, dedicated)
    caddy ─▶ api (FastAPI) ───────────────────────────────────▶ Postgres + pgvector, pg_trgm, unaccent,
                │  spaCy + embedder                              fuzzystrmatch · Data API off
-               │  AI gateway ──▶ Haiku 5.5 → DeepSeek → Groq (free)          ▲
+               │  AI gateway ──▶ Haiku 5.5 → DeepSeek → Gemini → Groq (free) ▲
                │  lms-adapter ──▶ LMS /internal/dictionary/learners (L1, level, role)
                │                                                              │
                └── jobs (Procrastinate) ──▶ worker: publish · embeddings · TTS · spot checks · seeds
@@ -73,7 +73,7 @@ Each decision gets a short ADR file in `docs/adr/` when we implement it.
 | 006 | Procrastinate job queue, no Redis | Jobs enqueue in the same transaction as the data; one service fewer |
 | 007 | spaCy in-process, no NLP microservice | Used for sentences only; single words resolve through form tables |
 | 008 | Content generated through Claude Code routines only | Your decision (§16.1); the Batch API stays as an escape hatch |
-| 009 | AI gateway: Haiku 5.5 → DeepSeek → Groq free, with a $5 cap | Resilience and cost control |
+| 009 | AI gateway: Haiku 5.5 → DeepSeek → Gemini → Groq free, with a $5 cap | Resilience and cost control |
 | 010 | No Gemini | Its API terms exclude services likely to be used by minors, and students may be 16+ |
 | 011 | Target BBB 4.0 / plugin SDK 1.0 | You're upgrading now |
 | 012 | Identity via nginx `auth_request` on the BBB server | No secrets in the browser; validated in the spike |
@@ -600,15 +600,15 @@ Caddy accepts `bbb` traffic only from the BBB server's IP. Factory and admin rou
 - `matched.via` is `exact`, `form` or `equivalent`. `equivalent` is the sense's first equivalent in the student's variety.
 - `did_you_mean` (trigram and phonetic matches) is filled only when no group matched.
 - Inflected input such as *me di cuenta* needs `l1_forms` (§10.2), which publishing doesn't generate yet; until it does, such queries reach these senses through `did_you_mean`.
-- `provisional` is null unless nothing matched. Then it says what happens about the missing word (§6.5) [LK-10], for example `{"status": "generating", "entry_key": null, "retry_after_ms": 1500}`:
+- `provisional` is null unless nothing matched. Then it says what happens about the missing word (§6.5) [LK-10], for example `{"status": "generating", "entry_key": null, "retry_after_ms": 1500}`. A search in Spanish gets the same object: the dictionary finds the English word it means.
 
 | `status` | Meaning | What the plugin does |
 |---|---|---|
-| `generating` | AI is writing a provisional entry | Shows that it's writing one, and asks the same lookup again after `retry_after_ms`, for up to about 10 s. The entry then arrives as an ordinary item with `"provisional": true`, shown as *Beta* |
-| `ready` | An entry exists under `entry_key`, though the query doesn't reach it | Opens `entry_key` |
+| `generating` | AI is writing a provisional entry, or finding the English word for a Spanish search | Shows that it's working, and asks the same lookup again after `retry_after_ms`, for up to about 10 s. The entry then arrives as an ordinary item with `"provisional": true`, shown as *Beta*; for a Spanish search, on the `l1` side |
+| `ready` | An entry exists under `entry_key`, though the query doesn't reach it: for example a Spanish search whose English word was already in the dictionary | Opens `entry_key` |
 | `queued` | The routine is writing this word, under `entry_key` | Says the word is coming soon |
-| `invalid` | Nothing to generate: not English, a misspelling, a name, blocked, or over 4 words | "Not found", with `did_you_mean` |
-| `quota_exceeded` | The student started 10 today | Asks them to try again tomorrow |
+| `invalid` | Nothing to generate: a word the search's language doesn't know, a misspelling, a name, blocked, or over 4 words | "Not found", with `did_you_mean` |
+| `quota_exceeded` | The student sent 10 missed searches to AI today | Asks them to try again tomorrow |
 | `unavailable` | AI isn't configured, or can't answer now | "Not found yet" |
 
 ### 5.4 Conventions
@@ -795,17 +795,23 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
    - not on the blocklist;
    - within the student's quota (10 provisional entries/day).
 2. **Dedupe:** an advisory lock on `hash(q_norm)` plus the `misses` row, so concurrent students trigger only one generation.
-3. **Generate:** the gateway task `provisional_entry` (Haiku → DeepSeek → Groq) returns 1–2 senses, one example each and the es-419 layer, as structured output.
+3. **Generate:** the gateway task `provisional_entry` (Haiku → DeepSeek → Gemini → Groq) returns 1–2 senses, one example each and the es-419 layer, as structured output.
 4. **Validate** with V1–V5, V10 and V11, then **publish** with status `provisional` and top priority. The next routine run leases it, and the final entry replaces it under the same key.
 
 **Built (`backend/src/smart_dictionary/ai/provisional.py`):**
 - **The lookup decides with SQL only** and answers at once. The generation runs after the response, in a worker thread (a FastAPI background task), and the response's `provisional` object (§5.3) tells the plugin to ask again in 1.5 s.
-- **The gate also skips** searches in the student's language (`dir=l1`) and queries over 4 words. The quota counts each student's successful `provisional_entry` calls over the last 24 hours; students are rows in `users`, keyed by the LMS person ID from the proxy.
+- **The gate also skips** queries over 4 words. The quota counts each student's searches that reached AI over the last 24 hours (distinct `ref_key`s of successful calls), so a Spanish search that takes two calls counts once. Students are rows in `users`, keyed by the LMS person ID from the proxy.
 - **The model drafts only the meaning:** lemma, part of speech, kind, and 1–2 senses with one example each. The server builds the document around it: the keys, pronunciations from CMUdict and Britfone, a multiword entry's pattern, and `provisional: true`.
 - **Checks:** all of V1–V11, with V11's counts for a short entry (1–2 senses, at least one example). Errors block; warnings lower `quality`. The query must be one of the draft's forms (*kettles* → *kettle*), so a model that drifts to another word publishes nothing.
 - **The model can turn a query down:** not English, a misspelling, a proper noun or a slur. The miss is then settled as `invalid`, and later lookups answer at once without a call.
 - **It never replaces the routine's work.** A word being written or already published keeps its document, and the miss points to it (`queued`, `ready`). A `queued` word nobody has written yet is taken over, keeping its queue priority. Provisional entries are leased first whatever their priority (`QUEUE_ORDER`).
 - **A failed generation** (no provider answered, or the draft failed its checks) leaves the miss `pending`, so the next lookup tries again. The quota and the budget bound the retries.
+- **Searches in Spanish** take their own path [LK-5, LK-6], so they work before the routine has written their words:
+  - **Routing:** a miss is Spanish when it was searched in Spanish (`dir=l1`), or with `dir=auto` when every word is known in Spanish and at least as common there as in English (`ref_freq`). Everything else takes the English path, so a Spanish word no longer spends a `provisional_entry` call that answers "not English". Other student languages have no path yet.
+  - **The gate is the English one,** in Spanish: every word known in Spanish (`ref_freq` or `ref_forms`), none blocked, the same quota and lock. The miss is a `misses` row with language `es`.
+  - **`translate_query`** names the 1–3 English headwords the student most likely means (lemma, part of speech, kind), best first, or `none` for junk, which settles the miss as `invalid`.
+  - **The best headword is resolved:** a live entry settles the miss as `ready` with its key, and an entry the routine is writing as `queued`. Otherwise `provisional_entry` drafts it, told what the student typed, and the Spanish is added to the matching sense's equivalents when the draft left it out. The miss then points to the provisional entry, and the next search reaches it directly through the equivalents generator.
+  - **The lookup log** records the miss under the language it was routed to, so a Spanish search no longer shows up as a missing English word.
 
 ### 6.6 The quality loop: flags, reports, signals, audits and the golden set
 
@@ -888,6 +894,7 @@ audits, golden set ───┘
 | `examples` | sense key, topic?, level? | 3 × {text, translation} | 400 | (sense, topic, level), permanent | 30 |
 | `difference` | two sense keys | contrast (≤ 80 words, L1), 2 examples | 400 | (sorted pair, L1), permanent | 20 |
 | `provisional_entry` | query | provisional EntryDoc | 900 | (q_norm), permanent | 10 |
+| `translate_query` | Spanish query, variety | 1–3 English headwords, or none | 200 | (variety, q_norm), permanent | shares `provisional_entry`'s 10 |
 | `triage_report` | report or flag + target content | valid?, key, reason, likely fix | 150 | — | — |
 | `spot_check` | entry doc + rubric | per-check verdicts | 600 | (key, content_version) | budget-limited |
 
@@ -898,8 +905,9 @@ Every prompt is grounded in the published card (definition, L1 gloss, examples),
 ```
 Claude Haiku 5.5 (Messages API, structured output)
    └─ on timeout (4 s) / 429 / 5xx / invalid output → DeepSeek (OpenAI-compatible, JSON mode, 6 s)
-        └─ on failure → Groq free tier (gpt-oss-120b, JSON mode, 6 s)
-             └─ on failure → fail soft: "AI help is busy, try again in a minute" (lookup is unaffected)
+        └─ on failure → Gemini 3.5 Flash-Lite (OpenAI-compatible, JSON mode, 6 s)
+             └─ on failure → Groq free tier (gpt-oss-120b, JSON mode, 6 s)
+                  └─ on failure → fail soft: "AI help is busy, try again in a minute" (lookup is unaffected)
 ```
 
 - One retry per provider, on 429/5xx only.
@@ -918,14 +926,17 @@ Claude Haiku 5.5 (Messages API, structured output)
 - **16+ safety rules** are built into every system prompt. Outputs pass the V10 blocklist and language detection. Refusals map to a friendly message.
 - **Inputs:** sentences are capped at 200 characters; emails and phone numbers are stripped before sending; nothing else about the student is sent.
 - **Retention:** `llm_calls` stores no raw student text. The cache key for `check_sentence` is a hash, and its cached output expires after 30 days [NF-7].
-- **Before enrolling under-18 students:** re-check the Anthropic, DeepSeek and Groq terms for 16–17-year-old users, and add any safeguards they require.
+- **Before enrolling under-18 students:** re-check the Anthropic, DeepSeek, Google (Gemini) and Groq terms for 16–17-year-old users, and add any safeguards they require.
 
 **Built (`backend/src/smart_dictionary/ai/`):** the gateway, and the `provisional_entry` task (§6.5). The other tasks arrive with their features.
-- **Claude** goes through the official `anthropic` SDK with structured outputs (`output_config.format`) at effort `low`. DeepSeek and Groq go over HTTPS with their JSON mode, and get the schema in the prompt.
-- **Keys:** a provider without its key (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `GROQ_API_KEY`) is skipped. With none, AI features answer `unavailable`.
+- **Claude** goes through the official `anthropic` SDK with structured outputs (`output_config.format`) at effort `low`. DeepSeek, Gemini and Groq go over HTTPS through their OpenAI-compatible endpoints in JSON mode, and get the schema in the prompt.
+- **Keys:** a provider without its key (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`) is skipped. With none, AI features answer `unavailable`.
+- **Gemini** is `gemini-3.5-flash-lite`: the newest Flash-Lite, stable, with no shutdown date announced (Google's pages, 2026-10-16).
+  - Flash-Lite 3.1 costs a little less but may retire from May 2027. Flash 3.8 costs $0.75 / $3.75, doubling in January 2027.
+  - Gemini 3 models always think. The gateway asks for low reasoning effort, and counts the thinking, which Google bills as output, from the usage total.
 - **Claude's timeout is 8 s, not 4.** A whole provisional entry takes longer than a sentence check, and the student isn't waiting on the call. Re-measure it with real traffic.
 - **The schema sent** is the task's Pydantic schema, with every object closed and every property required (null when unused), and without the length limits structured outputs don't take. The gateway checks those limits when it validates the answer.
-- **Prices** are in `PRICES` (`ai/gateway.py`). Claude Haiku 5.5 costs $0.10 / $0.50 per million tokens (prompts up to 100K). A model missing from the table is priced as the dearest one, so a gap only makes the cap stricter.
+- **Prices** are in `PRICES` (`ai/gateway.py`). Claude Haiku 5.5 costs $0.10 / $0.50 per million tokens (prompts up to 100K), and Gemini 3.5 Flash-Lite $0.30 / $2.50. A model missing from the table is priced as the dearest one, so a gap only makes the cap stricter.
 - **The cap** is `AI_MONTHLY_BUDGET_USD`, 5 by default. From 80% each call logs a warning; an alarm on that log line is still to do.
 - **The cache** keys on the prompt version and the input, so a new prompt never serves old answers.
 - **Privacy:** `llm_calls` keeps the student's `users` ID, for the quota, and the looked-up word as `ref_key`, which the gate has limited to known English words.
@@ -1128,7 +1139,7 @@ volumes: { caddy_data: {} }
   - `/smart-dictionary/prod/app/` for the API:
     - `DATABASE_URL`, as `dictionary_app` through the session pooler. That role reads and writes rows but can't change the schema (revision 0005). It bypasses the row-level security that hosted Supabase turns on for every table (revision 0006); RLS stays on as the guard against Supabase's Data API roles, which this project doesn't use. The pooler is IPv4, which Docker's default network supports; the direct connection is IPv6 only.
     - `BBB_PROXY_SECRET`;
-    - later the Anthropic, DeepSeek and Groq keys (separate from the LMS's, for cost attribution and revocation) and `DICTIONARY_SERVICE_TOKEN`.
+    - later the Anthropic, DeepSeek, Gemini and Groq keys (separate from the LMS's, for cost attribution and revocation) and `DICTIONARY_SERVICE_TOKEN`.
   - `/smart-dictionary/prod/migrate/` holds the owner's `DATABASE_URL`, which only the one-off migration container gets.
   - `/smart-dictionary/prod/caddy/` holds `SITE_ADDRESS`.
   - The metadata service answers the host only (IMDSv2, hop limit 1), so a container can't borrow the instance role to read the owner's URL.
