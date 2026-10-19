@@ -4,7 +4,7 @@ from fastapi import FastAPI
 
 from smart_dictionary import __version__
 from smart_dictionary.api import errors
-from smart_dictionary.api.routes import entries, health, search
+from smart_dictionary.api.routes import entries, factory, health, search
 from smart_dictionary.core.logging import configure_logging
 from smart_dictionary.core.settings import get_settings
 
@@ -23,4 +23,5 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(entries.router)
     app.include_router(search.router)
+    app.include_router(factory.router)
     return app

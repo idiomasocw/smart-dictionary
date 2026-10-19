@@ -40,6 +40,8 @@ uv run smart-dictionary data import --all  # load them into the ref_* tables
 uv run smart-dictionary fixtures load      # publish the hand-written entries in fixtures/
 uv run smart-dictionary seeds import       # seed_candidates from the owner's and open lists
 uv run smart-dictionary seeds export       # the ranked candidates, to data/raw/seed-candidates.csv
+uv run smart-dictionary seeds queue --dry-run --limit 20   # what would be queued next, by priority
+uv run smart-dictionary factory token --name routine       # a factory bearer token, shown once
 uv run smart-dictionary db app-role        # new password for the API's role; prints its DATABASE_URL
 uv run smart-dictionary api                # http://127.0.0.1:8000
 ```

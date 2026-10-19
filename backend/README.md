@@ -42,7 +42,8 @@ uv run pyright
 | `src/smart_dictionary/content/` | Publishing entry documents, their search projections and the student's entry card |
 | `src/smart_dictionary/importers/` | Fetchers and parsers that load the open datasets into the `ref_*` tables |
 | `src/smart_dictionary/seeds/` | The seed builder: the owner's seed file and the open lists, as ranked `seed_candidates` |
-| `src/smart_dictionary/cli.py` | `smart-dictionary api \| migrate \| schema \| data \| fixtures \| seeds \| db`; `worker` arrives with the job queue |
+| `src/smart_dictionary/factory/` | The factory's server side: hashed client tokens, the queue (`seeds queue`), leases and grounding packs |
+| `src/smart_dictionary/cli.py` | `smart-dictionary api \| migrate \| schema \| data \| fixtures \| seeds \| factory \| db`; `worker` arrives with the job queue |
 | `Dockerfile` | The production image: runtime dependencies only, run by an unprivileged user; deploying is in `../infra/README.md` |
 | `fixtures/` | Hand-written development entries (EntryDoc JSON), also used by the tests |
 | `migrations/` | Alembic revisions, written as plain SQL; no autogenerate |

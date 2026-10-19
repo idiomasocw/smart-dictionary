@@ -9,11 +9,13 @@ taken as given.
 import hmac
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, Header, Request
 
+from smart_dictionary.api.deps import SyncConnection
 from smart_dictionary.api.errors import ApiError
 from smart_dictionary.core.principal import Principal
 from smart_dictionary.core.settings import Settings, get_settings
+from smart_dictionary.factory import tokens
 
 
 def current_principal(
@@ -36,3 +38,18 @@ def current_principal(
 
 
 CurrentPrincipal = Annotated[Principal, Depends(current_principal)]
+
+
+def factory_client(
+    conn: SyncConnection, authorization: Annotated[str | None, Header()] = None
+) -> tokens.Client:
+    """The routine, identified by `Authorization: Bearer <token>` with the `factory` scope."""
+    scheme, _, token = (authorization or "").partition(" ")
+    token = token.strip()
+    client = tokens.find(conn, token, "factory") if scheme.lower() == "bearer" and token else None
+    if client is None:
+        raise ApiError(401, "unauthorized", "Missing or invalid factory token")
+    return client
+
+
+FactoryClient = Annotated[tokens.Client, Depends(factory_client)]

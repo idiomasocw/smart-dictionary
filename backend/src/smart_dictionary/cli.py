@@ -1,4 +1,4 @@
-"""The `smart-dictionary` command: api, migrate, schema, data, fixtures, seeds and db.
+"""The `smart-dictionary` command: api, migrate, schema, data, fixtures, seeds, factory and db.
 
 The container image runs api and migrate; `worker` joins them with the job queue.
 """
@@ -119,6 +119,43 @@ def _seeds(action: str, path: Path | None, out: Path | None) -> None:
     print(f"stored {inserted} candidates; {updated} already decided ones updated in place")
 
 
+def _seeds_queue(
+    lemmas: list[str] | None, levels: list[str] | None, limit: int | None, dry_run: bool
+) -> None:
+    from smart_dictionary.core.text import norm
+    from smart_dictionary.db.sync import connect
+    from smart_dictionary.factory.queue import queue
+
+    with connect() as conn:
+        queued = queue(
+            conn,
+            lemmas=[norm(lemma) for lemma in lemmas] if lemmas else None,
+            levels=levels,
+            limit=limit,
+            dry_run=dry_run,
+        )
+        if dry_run:
+            conn.rollback()
+    for item in queued[:20]:
+        print(f"{item.priority:>6}  {item.cefr or '--'}  {item.key}")
+    if len(queued) > 20:
+        print(f"... and {len(queued) - 20} more")
+    print(f"{'would queue' if dry_run else 'queued'} {len(queued)} entries")
+
+
+def _factory(action: str, name: str) -> None:
+    from smart_dictionary.db.sync import connect
+    from smart_dictionary.factory import tokens
+
+    with connect() as conn:
+        if action == "revoke":
+            print(f"revoked {tokens.revoke(conn, name)} token(s) named {name!r}")
+            return
+        token = tokens.create(conn, name, ["factory"])
+    print(f"factory token {name!r}, shown only now:", file=sys.stderr)
+    print(token)
+
+
 def _db_app_role(role: str) -> None:
     from smart_dictionary.core.settings import get_settings
     from smart_dictionary.db.roles import check_login, reset_password
@@ -157,13 +194,24 @@ def main(argv: list[str] | None = None) -> None:
     fixtures.add_argument("action", choices=["load"])
 
     seeds = commands.add_parser("seeds", help="seed candidates from the owner's and open lists")
-    seeds.add_argument("action", choices=["import", "export"])
+    seeds.add_argument("action", choices=["import", "export", "queue"])
     seeds.add_argument(
         "--file", type=Path, help="seed CSV (default data/seeds/owner/owner-seeds.csv)"
     )
     seeds.add_argument(
         "--out", type=Path, help="export path (default data/raw/seed-candidates.csv)"
     )
+    seeds.add_argument("--lemma", action="append", help="queue: only this headword (repeatable)")
+    seeds.add_argument(
+        "--level", action="append", choices=["A1", "A2", "B1", "B2", "C1", "C2"],
+        help="queue: only candidates listed at this level (repeatable)",
+    )  # fmt: skip
+    seeds.add_argument("--limit", type=int, help="queue: at most this many, by priority")
+    seeds.add_argument("--dry-run", action="store_true", help="queue: show, change nothing")
+
+    factory = commands.add_parser("factory", help="tokens for the factory routine")
+    factory.add_argument("action", choices=["token", "revoke"])
+    factory.add_argument("--name", required=True, help="a label such as 'routine'")
 
     db = commands.add_parser("db", help="database administration")
     db.add_argument("action", choices=["app-role"], help="new password for the API's role")
@@ -180,7 +228,11 @@ def main(argv: list[str] | None = None) -> None:
         _data(args.action, args.ids, args.every, args.force)
     elif args.command == "fixtures":
         _fixtures_load()
+    elif args.command == "seeds" and args.action == "queue":
+        _seeds_queue(args.lemma, args.level, args.limit, args.dry_run)
     elif args.command == "seeds":
         _seeds(args.action, args.file, args.out)
+    elif args.command == "factory":
+        _factory(args.action, args.name)
     elif args.command == "db":
         _db_app_role(args.role)

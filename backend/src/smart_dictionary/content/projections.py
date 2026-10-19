@@ -21,6 +21,18 @@ VARIETY_LANGUAGE = {"es-419": "es", "pt-BR": "pt", "ar": "ar"}
 Form = tuple[str, str | None, str]  # (display form, features, source)
 
 
+def inflections(lemma: str, pos: str, kind: str) -> list[tuple[str, str]]:
+    """LemmInflect's forms as (form, Penn tag); a phrasal verb inflects its verb (gave up)."""
+    if kind == "word" and pos in UPOS and " " not in lemma:
+        found = getAllInflections(lemma, upos=UPOS[pos]).items()
+        return [(value, tag) for tag, values in found for value in values]
+    if kind == "phrasal_verb":
+        head, _, rest = lemma.partition(" ")
+        found = getAllInflections(head, upos="VERB").items()
+        return [(f"{value} {rest}", tag) for tag, values in found for value in values]
+    return []
+
+
 def english_forms(doc: EntryDoc) -> dict[str, Form]:
     """Every normalized form that should find this entry, keyed by the normalized text."""
     forms: dict[str, Form] = {}
@@ -30,15 +42,8 @@ def english_forms(doc: EntryDoc) -> dict[str, Form]:
             forms.setdefault(variant, (form, features, source))
 
     def inflect(lemma: str) -> None:
-        if doc.kind == "word" and doc.pos in UPOS and " " not in lemma:
-            for tag, values in getAllInflections(lemma, upos=UPOS[doc.pos]).items():
-                for value in values:
-                    add(value, tag, "lemminflect")
-        elif doc.kind == "phrasal_verb":
-            head, _, rest = lemma.partition(" ")
-            for tag, values in getAllInflections(head, upos="VERB").items():
-                for value in values:
-                    add(f"{value} {rest}", tag, "lemminflect")
+        for form, tag in inflections(lemma, doc.pos, doc.kind):
+            add(form, tag, "lemminflect")
 
     add(doc.lemma, None, "doc")
     for variant in doc.variants:

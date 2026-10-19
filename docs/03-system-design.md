@@ -127,7 +127,11 @@ published ──(hide, flag or valid report / failed re-check or audit)──▶
 any ──(owner)──▶ retired
 ```
 
-**Leases fix the old "stuck in PROCESSING" bug (H3).** A leased batch sets `lease_batch_id` and `lease_expires_at` (default 3 h). A periodic job returns expired leases to their previous status. Leasing uses `FOR UPDATE SKIP LOCKED`, so two runs never get the same entry.
+**Leases fix the old "stuck in PROCESSING" bug (H3).**
+- A leased batch sets `lease_batch_id`, `lease_expires_at` (3 h) and `leased_from`, the status the entry had before (revision 0007).
+- Each new lease first returns entries from expired leases to their `leased_from` status and marks their batches `expired`, so no background job is needed for this.
+- Leasing uses `FOR UPDATE SKIP LOCKED`, so two runs never get the same entry.
+- Provisional entries and repairs come first, then priority.
 
 ### 3.4 DDL (v1)
 
@@ -652,7 +656,9 @@ You asked whether there's a better way to reach 20k than your own lists. My answ
 
    Within a tier, items are ordered by Zipf. Multiword items have no unigram frequency, so they're ordered by how many lists contain them plus the curation score (step 7).
 7. **Curation run** (a special routine batch, about 500 candidates per run). Claude marks each candidate keep/drop, confirms kind and POS, flags offensive or archaic items, scores learner usefulness from 1 to 5 (for multiword items), and **proposes missing high-value phrasal verbs and idioms**.
-8. **Export** the ranked list as CSV (`GET /v1/admin/seeds/export`) for you to skim, then **queue** it.
+8. **Export** the ranked list as CSV (`GET /v1/admin/seeds/export`) for you to skim, then **queue** it. `smart-dictionary seeds queue` turns candidates into `queued` entries.
+   - **What it takes:** only candidates with a part of speech and kind that form a valid entry and aren't rejected. `--lemma`, `--level` and `--limit` narrow the selection, and `--dry-run` previews it.
+   - **Priority within the queue:** the level comes first (A1 to C2, then words with no level), then your lists ahead of the open lists, then Zipf. The first milestone is A1–B2 coverage, so this departs from tier order. Tier order would put CEFR-J's basic words behind your long tail.
 
 **Built so far (roadmap 2.1):** `smart-dictionary seeds import` runs steps 2–4 and 6 into `seed_candidates`, and `seeds export` writes the ranked CSV of step 8 to `data/raw/seed-candidates.csv`.
 - **Parts of speech** come from the CEFR lists, then from each Wiktionary part of speech with at least 3 senses and 40% of the main one's, then from UniMorph. A spelling variant's entry counts its main spelling's senses (*catalog*).
@@ -682,6 +688,12 @@ A re-run replaces the undecided candidates and keeps the decided ones. Seed cand
 ```
 
 Wiktionary sense hints are cut to about 12 words each. They only signal which meanings exist; validator V9 enforces originality.
+
+**Built (`factory/packs.py`):**
+- **`forms`:** these come from LemmInflect, as search's do, mapped to the entry notation (`N;PL`, `V;PST`), never including the headword. A phrasal verb inflects its verb (*gave up*). UniMorph adds only irregular forms beyond those, for the entry's part of speech. UniMorph alone isn't reliable: it has no plural for *house*, only the annotation "uncountable" in its place.
+- **The pack also carries the seed candidate's variants, patterns, flags and original list lines.**
+
+`POST /v1/factory/batches` returns one pack per entry, and `GET /v1/factory/batches/{id}` reports a batch's state. Both take a bearer token with the `factory` scope, created with `smart-dictionary factory token --name <label>`.
 
 When an entry comes back for repair, `existing_keys` and `repair` carry the published keys, the failed checks, hides and flags, valid reports and a signal summary (§6.6), so the fix keeps the keys stable.
 
