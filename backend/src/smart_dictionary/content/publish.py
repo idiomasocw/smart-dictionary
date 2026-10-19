@@ -27,6 +27,7 @@ def publish(
     qa: dict[str, Any] | None = None,
     priority: int = 0,
     sources: list[str] | None = None,
+    quality: float | None = None,
 ) -> uuid.UUID:
     """Upsert the entry as published, record a revision and rebuild its projections."""
     payload = doc.model_dump(mode="json")
@@ -36,13 +37,14 @@ def publish(
     ).fetchone()
     row = conn.execute(
         "insert into entries (id, key, language, lemma, lemma_norm, pos, kind, homograph, cefr,"
-        " freq_zipf, priority, status, doc, sources, published_at)"
-        " values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'published', %s, %s, now())"
+        " freq_zipf, priority, status, doc, sources, quality, published_at)"
+        " values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'published', %s, %s, %s, now())"
         " on conflict (key) do update set lemma = excluded.lemma, lemma_norm = excluded.lemma_norm,"
         " pos = excluded.pos, kind = excluded.kind, cefr = excluded.cefr,"
         " freq_zipf = coalesce(excluded.freq_zipf, entries.freq_zipf), status = 'published',"
-        " doc = excluded.doc, content_version = entries.content_version + 1, attempts = 0,"
-        " lease_batch_id = null, lease_expires_at = null, published_at = now()"
+        " doc = excluded.doc, quality = excluded.quality,"
+        " content_version = entries.content_version + 1, attempts = 0, lease_batch_id = null,"
+        " lease_expires_at = null, leased_from = null, published_at = now()"
         " returning id",
         (
             new_id(),
@@ -58,6 +60,7 @@ def publish(
             priority,
             Jsonb(payload),
             sources or [],
+            quality,
         ),
     ).fetchone()
     assert row is not None

@@ -1,31 +1,46 @@
 """The factory's server side: tokens, the queue, leases, grounding packs and the API."""
 
 import uuid
+from decimal import Decimal
 from typing import Any, LiteralString
 
 import psycopg
+import pytest
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
+from factory_docs import DEFINING_WORDS, GO_DOC, GO_GLOSS, SPANISH_WORDS, go_doc
 from smart_dictionary.api.app import create_app
+from smart_dictionary.core.text import norm
 from smart_dictionary.db.sync import connect
 from smart_dictionary.factory import lease, tokens
 from smart_dictionary.factory.packs import build
 from smart_dictionary.factory.queue import queue
+from smart_dictionary.factory.submit import BatchClosed, Submission, submit
 
-GO_GLOSS = (
-    "To move from one place to another, especially to a place farther away from the speaker"
-    " or listener."
-)
+THRESHOLD = 0.7
 
 
 def _world(conn: psycopg.Connection) -> None:
-    """Seed candidates for every queue rule, and the reference facts packs draw on."""
-    for dataset in ("t-forms", "t-ipa", "t-wiki"):
+    """Seed candidates for every queue rule, and the reference facts packs and checks use."""
+    for dataset in ("t-forms", "t-ipa", "t-wiki", "ngsl", "t-freq"):
         conn.execute(
             "insert into ref_datasets (id, name, version, license, attribution, source_url)"
             " values (%s, %s, '1', 'test', 'test', 'file:///test')",
             (dataset, dataset),
+        )
+    for word in DEFINING_WORDS:
+        conn.execute(
+            "insert into ref_lists (dataset_id, lemma, lemma_norm) values ('ngsl', %s, %s)",
+            (word, word),
+        )
+    words = [("es", norm(word, "es")) for word in SPANISH_WORDS] + [
+        ("en", word) for word in DEFINING_WORDS
+    ]
+    for language, word in sorted(set(words)):
+        conn.execute(
+            "insert into ref_freq (dataset_id, language, word, zipf) values ('t-freq', %s, %s, 4)",
+            (language, word),
         )
     for form, features in (
         ("went", "V;PST"),
@@ -228,3 +243,127 @@ def test_factory_api_needs_its_token(migrated_database_url, anyio_backend_option
         assert {entry["status"] for entry in batch["entries"]} == {"generating"}
         missing = client.get(f"/v1/factory/batches/{uuid.uuid4()}", headers=auth)
         assert missing.status_code == 404
+
+
+def test_a_valid_entry_publishes_and_closes_its_batch(migrated_database_url):
+    with connect() as conn:
+        _world(conn)
+        queue(conn, lemmas=["go"])
+        batch = lease.lease(conn, 1)
+        assert batch.id is not None
+        status, results = submit(
+            conn, batch.id, [Submission("en:go:v", GO_DOC, "pass")],
+            produced_by={"model": "test"}, threshold=THRESHOLD,
+        )  # fmt: skip
+        assert status == "submitted"
+        assert [(r.key, r.outcome, r.score, r.errors) for r in results] == [
+            ("en:go:v", "published", 1.0, [])
+        ]
+        entry = conn.execute(
+            "select status::text, quality, lease_batch_id, leased_from from entries"
+            " where key = 'en:go:v'"
+        ).fetchone()
+        assert entry == ("published", Decimal("1.000"), None, None)
+        revisions = "select outcome, produced_by->>'source' from entry_revisions"
+        assert conn.execute(revisions).fetchall() == [("published", "routine")]
+        forms = {row[0] for row in conn.execute("select form_norm from entry_forms")}
+        assert {"go", "went", "gone", "going"} <= forms
+        batch_row = lease.status(conn, batch.id)
+        assert batch_row is not None and batch_row["status"] == "submitted"
+
+
+def test_a_failing_entry_is_repaired_twice_then_quarantined(migrated_database_url):
+    bad = go_doc()
+    bad["senses"][0]["examples"] = bad["senses"][0]["examples"][:1]  # V11: 2-3 examples
+    with connect() as conn:
+        _world(conn)
+        queue(conn, lemmas=["go"])
+        outcomes = []
+        for attempt in range(3):
+            batch = lease.lease(conn, 1)
+            assert batch.id is not None
+            if attempt:
+                # A repair's pack carries what failed last time.
+                [pack] = build(conn, batch.entry_ids)
+                assert pack.repair is not None
+                assert pack.repair["errors"][0]["check"] == "V11"
+            _, [result] = submit(
+                conn, batch.id, [Submission("en:go:v", bad)], produced_by={}, threshold=THRESHOLD
+            )
+            outcomes.append(result.outcome)
+        assert outcomes == ["needs_repair", "needs_repair", "quarantined"]
+        assert lease.lease(conn, 1) == lease.Batch(None, None, [])
+        assert _scalar(conn, "select doc is null from entries where key = 'en:go:v'")
+        assert _scalar(conn, "select count(*) from entry_revisions") == 3
+
+
+def test_only_the_batch_holding_an_entry_can_submit_it(migrated_database_url):
+    with connect() as conn:
+        _world(conn)
+        queue(conn, lemmas=["go", "realize"])
+        first, second = lease.lease(conn, 1), lease.lease(conn, 1)
+        assert first.id is not None and second.id is not None
+        _, [stray] = submit(
+            conn, second.id, [Submission("en:go:v", GO_DOC, "pass")],
+            produced_by={}, threshold=THRESHOLD,
+        )  # fmt: skip
+        assert stray.outcome == "not_leased"
+        assert _scalar(conn, "select status::text from entries where key = 'en:go:v'") == (
+            "generating"
+        )
+        status, _ = submit(
+            conn, first.id, [Submission("en:go:v", GO_DOC, "pass")],
+            produced_by={}, threshold=THRESHOLD,
+        )  # fmt: skip
+        assert status == "submitted"
+        with pytest.raises(BatchClosed):
+            submit(conn, first.id, [Submission("en:go:v", GO_DOC)], produced_by={}, threshold=0)
+
+
+def test_a_reviewer_verdict_can_hold_an_entry_back(migrated_database_url):
+    with connect() as conn:
+        _world(conn)
+        queue(conn, lemmas=["go"])
+        batch = lease.lease(conn, 1)
+        assert batch.id is not None
+        _, [result] = submit(
+            conn, batch.id, [Submission("en:go:v", GO_DOC, "fail", ["unnatural example"])],
+            produced_by={}, threshold=THRESHOLD,
+        )  # fmt: skip
+        assert (result.outcome, result.score) == ("needs_repair", 0.5)
+
+
+def test_factory_api_checks_and_submits(migrated_database_url, anyio_backend_options):
+    with connect() as conn:
+        _world(conn)
+        queue(conn, lemmas=["go"])
+        token = tokens.create(conn, "routine", ["factory"])
+    auth = {"Authorization": f"Bearer {token}"}
+    with TestClient(create_app(), backend_options=anyio_backend_options) as client:
+        batch = client.post("/v1/factory/batches", json={"size": 1}, headers=auth).json()
+
+        bad = go_doc()
+        bad["senses"][0]["definition"] = "to go from one place to another"
+        checked = client.post(
+            "/v1/factory/validate", json={"entries": [{"key": "en:go:v", "doc": bad}]}, headers=auth
+        )
+        assert checked.status_code == 200, checked.text
+        [result] = checked.json()["results"]
+        assert result["valid"] is False
+        assert [error["check"] for error in result["errors"]] == ["V4"]
+
+        payload = {
+            "model": "test-model",
+            "prompt_version": "style-1",
+            "entries": [{"key": "en:go:v", "doc": GO_DOC, "review": {"verdict": "pass"}}],
+        }
+        url = f"/v1/factory/batches/{batch['batch_id']}/entries"
+        done = client.post(url, json=payload, headers=auth)
+        assert done.status_code == 200, done.text
+        assert done.json()["status"] == "submitted"
+        assert done.json()["results"][0]["outcome"] == "published"
+        again = client.post(url, json=payload, headers=auth)
+        assert again.status_code == 409
+        assert again.json()["code"] == "batch_closed"
+        # Published: the read API serves it.
+        assert client.get("/v1/entries/en:go:v").status_code == 200

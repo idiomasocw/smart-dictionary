@@ -746,6 +746,25 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
 | V11 | Counts: 1–6 senses, 2–3 examples, ≤ 6 collocations, ≤ 3 notes per sense | error |
 
 - **Quality score** = weighted warnings + reviewer verdicts (+ spot-check results when present). An entry **publishes** if there are no errors and the score is ≥ τ, with τ calibrated on the golden set.
+
+**Built (`factory/validate.py`, `factory/submit.py`):**
+- **Every check from V1 to V11, plus the style guide's length limits.** Three use stand-ins until their tools exist:
+  - **V5** lets each word vote by frequency instead of using a detector. A word counts as Spanish evidence when wordfreq finds it at least as common in Spanish as in English, and words neither language knows don't vote. Lexicon membership alone failed on real data, because the Spanish web lists everyday English words.
+  - **V8** compares the words of two definitions until sense embeddings exist.
+  - **V3** matches inflected forms and multiword patterns without spaCy, including split phrasal verbs within `max_gap`.
+- **V10's blocklist is only a floor.** The reviewer and the spot checks catch the rest.
+- **The checks were calibrated against the real reference data.** The 12 hand-written entries and the style guide's example pass with no issues. An English gloss in the Spanish layer, an invented equivalent, a definition in rare words and the headword in its own definition are all caught.
+- **The score starts at 1:**
+  - each warning subtracts its weight (0.1, or 0.05 for V7 and 0.15 for V8);
+  - the reviewer's verdict subtracts 0, 0.15 or 0.5 (pass, uncertain, fail);
+  - τ is `FACTORY_PUBLISH_THRESHOLD`, 0.7 until the golden set calibrates it.
+- **Repairs:** a failing entry goes to `needs_repair` with its issues in the revision's `qa`, which the next pack carries. After 2 failed repairs it's quarantined. Every submission is a revision.
+- **`POST /v1/factory/validate`** runs the same checks without saving anything. The routine uses it while writing.
+- **`POST /v1/factory/batches/{id}/entries`** reports each entry's outcome:
+  - `published`, `needs_repair` or `quarantined`;
+  - `not_leased` when the batch no longer holds that entry;
+  - a closed or expired batch gets 409.
+- **Not yet:** the repair flow for published entries (§6.6). A published entry sent to repair leaves search while it's `needs_repair`, and a final failure would quarantine it. Today's flow covers new entries.
 - **Spot checks:** Haiku 5.5 re-runs the rubric on a 10% sample, plus every entry the reviewer marked "uncertain", within the AI budget (§7.3).
 - **Publish transaction:**
   1. Insert the revision.

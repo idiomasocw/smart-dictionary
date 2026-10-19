@@ -63,6 +63,7 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 # IPA symbols (ɑ, ʊ, ʃ…) are the data here, not look-alike typos.
 "src/smart_dictionary/importers/phonetics.py" = ["RUF001", "RUF002"]
 "src/smart_dictionary/importers/sources.py" = ["RUF002"]
+"src/smart_dictionary/factory/validate.py" = ["RUF001", "RUF002"]
 
 [tool.pyright]
 include = ["src", "tests"]

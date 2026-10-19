@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     bbb_proxy_secret: SecretStr | None = None
     default_tenant: str = "ocw"
     default_variety: L1Variety = "es-419"
+    # A submitted entry publishes when it has no errors and scores at least this (design
+    # §6.4); calibrated on the golden set in the pilot.
+    factory_publish_threshold: float = Field(default=0.7, ge=0, le=1)
 
     @field_validator("database_url")
     @classmethod
