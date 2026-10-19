@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     # all the AI features answer "unavailable"; lookups never depend on them.
     anthropic_api_key: SecretStr | None = None
     deepseek_api_key: SecretStr | None = None
+    gemini_api_key: SecretStr | None = None
     groq_api_key: SecretStr | None = None
     # The monthly cap on paid providers [OP-2]: an alert at 80%, and at 100% only the free
     # provider answers until the month rolls over.

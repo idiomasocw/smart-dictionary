@@ -4,8 +4,8 @@ Each provider turns a system prompt, the user's text and a JSON Schema into a di
 should match the schema; the gateway validates it against the task's model.
 - **Claude** goes through the official SDK with structured outputs (`output_config.format`),
   so its answer is JSON that matches the schema.
-- **DeepSeek and Groq** are OpenAI-compatible and only have a JSON mode, so the schema goes
-  into their prompt. They're called over plain HTTPS.
+- **DeepSeek, Gemini and Groq** are called through their OpenAI-compatible endpoints, over
+  plain HTTPS. Their JSON mode only promises an object, so the schema goes into the prompt.
 
 The calls are synchronous: the tasks that use them run in worker threads, never in a
 lookup's request (NF-1).
@@ -29,7 +29,11 @@ Failure = Literal["error", "timeout", "refused"]
 Transport = Callable[[str, dict[str, str], dict[str, Any], float], tuple[int, Any]]
 
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+# The newest Flash-Lite: stable, with no shutdown date announced (Google's deprecations page,
+# 2026-10). Flash-Lite 3.1 costs a little less but may retire from May 2027.
+GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 # Structured outputs don't take these (the SDK's own parse() strips them the same way); the
 # gateway checks them when it validates the answer against the task's model.
@@ -187,6 +191,8 @@ class OpenAICompatible:
     timeout: float = 6.0
     # A reasoning model spends tokens before it answers, and they count toward max_tokens.
     token_factor: float = 1.0
+    # Provider-specific request fields, such as Gemini's reasoning_effort.
+    extra: dict[str, Any] = field(default_factory=dict)
     transport: Transport = http_json
 
     def complete(self, system: str, user: str, schema: dict[str, Any], max_tokens: int) -> Reply:
@@ -202,6 +208,7 @@ class OpenAICompatible:
                 {"role": "system", "content": instructions},
                 {"role": "user", "content": user},
             ],
+            **self.extra,
         }
         headers = {"authorization": f"Bearer {self.key}"}
         status, payload = self.transport(self.url, headers, body, self.timeout)
@@ -216,11 +223,17 @@ class OpenAICompatible:
         if not isinstance(data, dict):
             raise ProviderError("error", "the answer isn't a JSON object")
         usage = payload.get("usage") or {}
+        prompt, total = usage.get("prompt_tokens"), usage.get("total_tokens")
+        out = usage.get("completion_tokens")
+        if isinstance(prompt, int) and isinstance(total, int):
+            # Gemini may leave its thinking out of completion_tokens but bills it as output,
+            # and counts it in the total: so the output is whatever the prompt isn't.
+            out = max(out or 0, total - prompt)
         return Reply(
             data=data,
             model=payload.get("model") or self.model,
-            in_tokens=usage.get("prompt_tokens"),
-            out_tokens=usage.get("completion_tokens"),
+            in_tokens=prompt,
+            out_tokens=out,
         )
 
 
@@ -232,6 +245,13 @@ def chain(settings: Settings) -> list[Provider]:
     if settings.deepseek_api_key is not None:
         key = settings.deepseek_api_key.get_secret_value()
         providers.append(OpenAICompatible("deepseek", DEEPSEEK_URL, key, "deepseek-chat", True))
+    if settings.gemini_api_key is not None:
+        key = settings.gemini_api_key.get_secret_value()
+        # Gemini 3 models always think; low effort keeps an entry fast and cheap, and the
+        # factor leaves room in case the thinking counts toward max_tokens.
+        gemini = OpenAICompatible("gemini", GEMINI_URL, key, GEMINI_MODEL, True, token_factor=3)
+        gemini.extra["reasoning_effort"] = "low"
+        providers.append(gemini)
     if settings.groq_api_key is not None:
         key = settings.groq_api_key.get_secret_value()
         providers.append(

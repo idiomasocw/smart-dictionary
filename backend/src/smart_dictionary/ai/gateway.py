@@ -1,6 +1,7 @@
 """The AI gateway (design §7, ADR-009): the one way request-time AI reaches a model.
 
-- **Providers in order:** Claude Haiku, then DeepSeek, then Groq, each skipped without a key.
+- **Providers in order:** Claude Haiku, then DeepSeek, Gemini and Groq, each skipped without a
+  key.
 - **Retries:** one more try after a 429 or 5xx. A timeout, a refusal or an answer that fails
   validation moves on to the next provider.
 - **A circuit breaker per provider:** 5 failures in a minute keep it out for 2 minutes.
@@ -35,6 +36,7 @@ log = logging.getLogger(__name__)
 PRICES: dict[str, tuple[float, float]] = {
     "claude-haiku-5-5": (0.10, 0.50),  # prompts up to 100K tokens; ours are ~1K
     "deepseek-chat": (0.28, 0.42),
+    "gemini-3.5-flash-lite": (0.30, 2.50),  # output includes thinking; Google, 2026-10-16
     "openai/gpt-oss-120b": (0.0, 0.0),  # Groq's free tier
 }
 ALERT_SHARE = 0.8

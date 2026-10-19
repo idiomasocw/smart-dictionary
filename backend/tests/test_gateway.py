@@ -7,10 +7,19 @@ from typing import Any
 import anthropic
 import httpx2
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from smart_dictionary.ai.gateway import Breaker, Gateway, Task, Unavailable, cost
-from smart_dictionary.ai.providers import Claude, ProviderError, Reply, api_schema
+from smart_dictionary.ai.providers import (
+    GEMINI_MODEL,
+    Claude,
+    OpenAICompatible,
+    ProviderError,
+    Reply,
+    api_schema,
+    chain,
+)
+from smart_dictionary.core.settings import get_settings
 from smart_dictionary.db.sync import connect
 
 
@@ -200,3 +209,52 @@ def test_claude_reads_the_structured_answer_and_maps_failures():
         with pytest.raises(ProviderError) as raised:
             failing(error).complete("s", "u", {}, 50)
         assert (raised.value.failure, raised.value.retry) == (failure, retry)
+
+
+def test_gemini_answers_after_deepseek_through_its_openai_endpoint():
+    names = ("anthropic_api_key", "deepseek_api_key", "gemini_api_key", "groq_api_key")
+    keys = {name: SecretStr(name) for name in names}
+    providers = chain(get_settings().model_copy(update=keys))
+    assert [(provider.name, provider.paid) for provider in providers] == [
+        ("anthropic", True), ("deepseek", True), ("gemini", True), ("groq", False),
+    ]  # fmt: skip
+    gemini = providers[2]
+    assert isinstance(gemini, OpenAICompatible)
+
+    sent: dict[str, Any] = {}
+
+    def transport(
+        url: str, headers: dict[str, str], body: dict[str, Any], timeout: float
+    ) -> tuple[int, Any]:
+        sent.update(url=url, headers=headers, body=body)
+        return 200, {
+            "model": GEMINI_MODEL,
+            "choices": [{"message": {"content": '{"word": "go"}'}}],
+            # The thinking is billed as output but left out of completion_tokens.
+            "usage": {"prompt_tokens": 1000, "completion_tokens": 300, "total_tokens": 1800},
+        }
+
+    gemini.transport = transport
+    reply = gemini.complete("Answer.", "go", api_schema(Word), 900)
+    assert sent["url"] == (
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    )
+    assert sent["headers"]["authorization"] == "Bearer gemini_api_key"
+    body = sent["body"]
+    assert (body["model"], body["max_tokens"], body["reasoning_effort"]) == (
+        "gemini-3.5-flash-lite", 2700, "low",
+    )  # fmt: skip
+    assert body["response_format"] == {"type": "json_object"}
+    assert (reply.data, reply.in_tokens, reply.out_tokens) == ({"word": "go"}, 1000, 800)
+    # 1,000 tokens in at $0.30 and 800 out at $2.50 per million.
+    assert cost(reply.model, reply.in_tokens, reply.out_tokens) == 0.0023
+
+    def busy(
+        url: str, headers: dict[str, str], body: dict[str, Any], timeout: float
+    ) -> tuple[int, Any]:
+        return 503, None
+
+    gemini.transport = busy
+    with pytest.raises(ProviderError) as raised:
+        gemini.complete("Answer.", "go", api_schema(Word), 900)
+    assert raised.value.retry
