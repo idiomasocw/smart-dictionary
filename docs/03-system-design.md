@@ -1071,7 +1071,28 @@ Exit criteria: all four work on BBB 4.0, or a fallback is documented.
   - Headwords: every pronunciation.
   - Examples: en-US.
 - **Encoding:** 24 kHz output → AAC 48 kbps mono `.m4a` via ffmpeg.
-- **Storage key:** `audio/{sha256(engine|voice|ipa_or_text)}.m4a`. Content addressing dedupes files and allows `Cache-Control: public, max-age=31536000, immutable`.
+- **Storage layout:** one folder per entry, and one file per thing said, with the content's hash in its name:
+
+  ```
+  v1/                                     the layout's version; a new format goes to v2/ beside it
+    en/                                   the entry's language
+      house/                              the entry key's slug
+        n/                                its code: n, v, phrv… (a homograph's n~2 becomes n-2)
+          pron.en-us.af_heart.3f9a2c1d0b7e.m4a        the headword, per variety and voice
+          s2-pron.en-gb.bf_emma.9c0d4e7a1b2f.m4a      a pronunciation for sense 2 only
+          s1-ex2.en-us.af_heart.71aa03bc94d2.m4a      sense 1, example 2
+  ```
+
+  - **The hash** is the first 12 hex characters of `sha256(engine|voice|variety|IPA or text)`. Anything that changes the sound changes the name, so a file is never overwritten, and every copy can be cached for a year.
+  - **Path characters:** only `a-z 0-9 - _ .`. A slug's accents are dropped, and any other character becomes `-`, so no path needs URL encoding. Two slugs that fold to the same folder (*résumé*, *resume*) still get different files, because the hash names them.
+  - **The database is the source of truth.** `audio_assets.s3_key` holds each file's path, and the API builds links as `AUDIO_BASE_URL` + `/` + `s3_key`; nothing guesses a path. The folders are for people browsing the bucket and for handling one entry's files as a group.
+  - **Upload headers:** `Content-Type: audio/mp4` and `Cache-Control: public, max-age=31536000, immutable`.
+  - **Replaced files** stay in place. A cleanup job will delete the files no `audio_assets` row points to, 30 days after they're replaced. Versioning keeps a deleted file for another 90 days.
+- **Delivery (built, `infra/cdk/stack.py`):**
+  - A private, versioned S3 bucket, read only by a CloudFront distribution through Origin Access Control. The distribution answers on its default `*.cloudfront.net` address, and SSM holds it as `AUDIO_BASE_URL`, with the bucket as `AUDIO_BUCKET`.
+  - **CORS for any origin, on every response.** A CloudFront response-headers policy adds the CORS headers, so a copy cached from a plain `<audio>` request still works for a later `fetch()`. S3's own CORS rule answers preflights.
+  - **Delivery settings:** HTTPS only, HTTP/2 and 3, IPv6. The full price class, because only it includes the South American edge locations. A missing file is a 403, cached for 30 seconds.
+  - **Still open, for the TTS job:** who uploads. The API's containers can't use the host's AWS role, by design (IMDSv2 hop limit 1).
 - **Scheduling:** worker queue `batch` with concurrency 1, preferring night hours. For scale: 5k entries is about 10k headword files plus about 15k example files *(estimate)*.
 
 ---

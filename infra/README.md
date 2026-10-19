@@ -278,10 +278,45 @@ MSYS_NO_PATHCONV=1 aws ssm get-parameter --region us-east-2 --with-decryption --
 
 The host's image is pinned in `cdk.context.json`. Refreshing it (`npx cdk context --reset <key>`) replaces the host, so deploy again afterwards.
 
+## Audio storage
+
+**What it is.** The pronunciation and example audio has its own private, versioned S3 bucket, read only by a CloudFront distribution on its default `*.cloudfront.net` address. Students' browsers get the files from CloudFront, never from S3. The file layout is in design §10.4.
+
+**Adding it, once.** From `infra/cdk`, in Git Bash:
+
+```bash
+cd infra/cdk
+npx cdk diff
+npx cdk deploy --require-approval never
+cd ../..
+```
+
+- **`cdk diff`** should list only additions: the `Audio` bucket and its policy, `AudioHeaders`, the origin access control, `AudioCdn`, the parameters `AudioBaseUrl` and `AudioBucketName`, and two outputs. Nothing existing changes.
+- **`cdk deploy`** takes about 5 minutes, most of it CloudFront spreading the distribution to its edge locations. The outputs then include `AudioBucket` and `AudioCdnUrl`.
+- **The API learns both values at its next deploy,** from `/smart-dictionary/prod/app/AUDIO_BASE_URL` and `AUDIO_BUCKET`. Nothing uses them until the audio job exists.
+
+**Checking it, with a throwaway file:**
+
+```bash
+BUCKET=$(aws cloudformation describe-stacks --region us-east-2 --stack-name SmartDictionary --query "Stacks[0].Outputs[?OutputKey=='AudioBucket'].OutputValue" --output text)
+CDN=$(aws cloudformation describe-stacks --region us-east-2 --stack-name SmartDictionary --query "Stacks[0].Outputs[?OutputKey=='AudioCdnUrl'].OutputValue" --output text)
+echo "check" | aws s3 cp - "s3://$BUCKET/v1/_check/hello.txt" --content-type text/plain --cache-control "public, max-age=60"
+curl -sI -H "Origin: https://example.com" "$CDN/v1/_check/hello.txt" | grep -iE "^HTTP|access-control-allow-origin|x-cache"
+curl -sI -X OPTIONS -H "Origin: https://example.com" -H "Access-Control-Request-Method: GET" -H "Access-Control-Request-Headers: range" "$CDN/v1/_check/hello.txt" | grep -iE "^HTTP|access-control-allow"
+curl -s -o /dev/null -w '%{http_code}\n' "https://$BUCKET.s3.us-east-2.amazonaws.com/v1/_check/hello.txt"
+aws s3 rm "s3://$BUCKET/v1/_check/hello.txt"
+```
+
+**What you should see:**
+1. The first `curl` answers `HTTP/2 200` and `access-control-allow-origin: *`. Run it twice: the second time, `x-cache: Hit from cloudfront`.
+2. The preflight (`OPTIONS`) answers 200 with the `access-control-allow-*` headers.
+3. The direct S3 address answers `403`: the bucket isn't public.
+
+The last line removes the test file. Versioning keeps it for 90 days, which costs nothing.
+
 ## Not yet
 
 These arrive with the features that need them (design §11):
-- the worker;
+- the worker, and the audio job that fills the bucket;
 - the nightly `pg_dump` to S3;
-- Uptime Kuma;
-- CloudFront.
+- Uptime Kuma.

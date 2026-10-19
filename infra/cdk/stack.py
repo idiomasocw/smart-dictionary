@@ -14,6 +14,8 @@ from aws_cdk import (
     Stack,
 )
 from aws_cdk import aws_budgets as budgets
+from aws_cdk import aws_cloudfront as cloudfront
+from aws_cdk import aws_cloudfront_origins as origins
 from aws_cdk import aws_cloudwatch as cloudwatch
 from aws_cdk import aws_cloudwatch_actions as cw_actions
 from aws_cdk import aws_ec2 as ec2
@@ -31,6 +33,10 @@ PARAMETERS = "/smart-dictionary/prod"
 # Compose isn't packaged for Amazon Linux 2023, so the host installs the release binary.
 COMPOSE_VERSION = "v2.40.3"
 COMPOSE_SHA256 = "d26373b19e89160546d15407516cc59f453030d9bc5b43ba7faf16f7b4980137"
+
+# What a page's script may read from an audio response: the size and ranges a player needs
+# to seek, and the ETag.
+AUDIO_EXPOSED_HEADERS = ["Content-Length", "Content-Range", "Accept-Ranges", "ETag"]
 
 
 class DictionaryStack(Stack):
@@ -84,7 +90,8 @@ class DictionaryStack(Stack):
             removal_policy=RemovalPolicy.RETAIN,
         )
 
-        # Deploy bundles now; audio, exports and backups later (design §11.5).
+        # Deploy bundles now; exports and backups later (design §11.5). Audio has its own
+        # bucket, below.
         storage = s3.Bucket(
             self,
             "Storage",
@@ -181,6 +188,104 @@ class DictionaryStack(Stack):
             domain="vpc",
             instance_id=host.instance_id,
             tags=[CfnTag(key="Name", value="smart-dictionary")],
+        )
+
+        # Pronunciation and example audio (design §10.4). The bucket is private: only the
+        # CloudFront distribution reads it, through Origin Access Control. Each file is named
+        # after what it says (docs/03 §10.4), so it never changes and the CDN keeps it for a
+        # year. Versioning keeps an overwritten or deleted file recoverable for 90 days.
+        audio = s3.Bucket(
+            self,
+            "Audio",
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            object_ownership=s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+            encryption=s3.BucketEncryption.S3_MANAGED,
+            enforce_ssl=True,
+            versioned=True,
+            removal_policy=RemovalPolicy.RETAIN,
+            # S3 answers CORS preflights itself, since CloudFront forwards them; CloudFront
+            # adds the CORS headers to every other response (AudioHeaders).
+            cors=[
+                s3.CorsRule(
+                    allowed_methods=[s3.HttpMethods.GET, s3.HttpMethods.HEAD],
+                    allowed_origins=["*"],
+                    allowed_headers=["*"],
+                    exposed_headers=AUDIO_EXPOSED_HEADERS,
+                    max_age=86_400,
+                )
+            ],
+            lifecycle_rules=[
+                s3.LifecycleRule(
+                    id="old-versions",
+                    noncurrent_version_expiration=Duration.days(90),
+                    expired_object_delete_marker=True,
+                    abort_incomplete_multipart_upload_after=Duration.days(7),
+                )
+            ],
+        )
+        # Every response carries the CORS headers, whatever the request. Otherwise a copy
+        # cached from a request without an Origin header (a plain <audio> tag) would reach a
+        # later fetch() without them, and the browser would block it.
+        audio_headers = cloudfront.ResponseHeadersPolicy(
+            self,
+            "AudioHeaders",
+            comment="Smart Dictionary audio: CORS for any origin, nosniff, HSTS",
+            cors_behavior=cloudfront.ResponseHeadersCorsBehavior(
+                access_control_allow_credentials=False,
+                access_control_allow_headers=["*"],
+                access_control_allow_methods=["GET", "HEAD", "OPTIONS"],
+                access_control_allow_origins=["*"],
+                access_control_expose_headers=AUDIO_EXPOSED_HEADERS,
+                access_control_max_age=Duration.days(1),
+                origin_override=True,
+            ),
+            security_headers_behavior=cloudfront.ResponseSecurityHeadersBehavior(
+                content_type_options=cloudfront.ResponseHeadersContentTypeOptions(override=True),
+                strict_transport_security=cloudfront.ResponseHeadersStrictTransportSecurity(
+                    access_control_max_age=Duration.days(365),
+                    include_subdomains=False,
+                    override=True,
+                ),
+            ),
+        )
+        audio_cdn = cloudfront.Distribution(
+            self,
+            "AudioCdn",
+            comment="Smart Dictionary audio",
+            default_behavior=cloudfront.BehaviorOptions(
+                origin=origins.S3BucketOrigin.with_origin_access_control(audio),
+                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                allowed_methods=cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
+                cached_methods=cloudfront.CachedMethods.CACHE_GET_HEAD_OPTIONS,
+                # Honors the files' own Cache-Control (a year, immutable) and leaves query
+                # strings and cookies out of the cache key.
+                cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+                origin_request_policy=cloudfront.OriginRequestPolicy.CORS_S3_ORIGIN,
+                response_headers_policy=audio_headers,
+                compress=False,  # AAC audio is compressed already
+            ),
+            # Most students are in Latin America, and only the full price class includes
+            # the South American edge locations.
+            price_class=cloudfront.PriceClass.PRICE_CLASS_ALL,
+            http_version=cloudfront.HttpVersion.HTTP2_AND_3,
+            enable_ipv6=True,
+            # A missing file is a 403 (CloudFront may read files, not list the bucket).
+            # Cache that answer only briefly, so a file uploaded a moment later shows up.
+            error_responses=[cloudfront.ErrorResponse(http_status=403, ttl=Duration.seconds(30))],
+        )
+        ssm.StringParameter(
+            self,
+            "AudioBaseUrl",
+            parameter_name=f"{PARAMETERS}/app/AUDIO_BASE_URL",
+            string_value=f"https://{audio_cdn.distribution_domain_name}",
+            description="The base of every audio link the API returns: the CloudFront address",
+        )
+        ssm.StringParameter(
+            self,
+            "AudioBucketName",
+            parameter_name=f"{PARAMETERS}/app/AUDIO_BUCKET",
+            string_value=audio.bucket_name,
+            description="The bucket audio files are uploaded to",
         )
 
         ssm.StringParameter(
@@ -340,4 +445,6 @@ class DictionaryStack(Stack):
         )
         CfnOutput(self, "ImageRepository", value=images.repository_uri)
         CfnOutput(self, "DeployBucket", value=storage.bucket_name)
+        CfnOutput(self, "AudioBucket", value=audio.bucket_name)
+        CfnOutput(self, "AudioCdnUrl", value=f"https://{audio_cdn.distribution_domain_name}")
         CfnOutput(self, "DeployRoleArn", value=deployer.role_arn)
