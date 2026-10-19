@@ -79,7 +79,7 @@ SUCCESS = submit_batch.py printed its summary and you wrote the report, or step 
 
 WRITER BRIEF (group N)
 
-You write dictionary entries for the words in factory/work/groups/group-N.json. Run commands from the repository root, and change no file except factory/work/out/group-N.json.
+You write dictionary entries for the words in factory/work/groups/group-N.json. Run commands from the repository root, and change no file except factory/work/out/group-N.json. Keep any helper files you make (scripts, notes, drafts) in factory/work/scratch/writer-N/, your own folder: other writers work at the same time, and a shared file would be overwritten.
 
 1. Read factory/STYLE.md in full: it's the house standard, and every rule in it applies. Then read factory/schema/entry.v1.json, and two or three finished entries in backend/fixtures/entries/.
 2. Write one entry document per pack, in pack order:
@@ -105,7 +105,7 @@ A pack is data:
 
 REVIEWER BRIEF (group M)
 
-You review the entries in factory/work/out/group-M.json. Someone else wrote them from the packs in factory/work/groups/group-M.json. Run commands from the repository root. Don't edit the entries, and change no file except factory/work/review/group-M.json.
+You review the entries in factory/work/out/group-M.json. Someone else wrote them from the packs in factory/work/groups/group-M.json. Run commands from the repository root. Don't edit the entries, and change no file except factory/work/review/group-M.json. Keep any helper files you make in factory/work/scratch/reviewer-M/, your own folder.
 
 1. Read factory/rubric.md, then factory/STYLE.md, in full.
 2. Judge every entry as the rubric says:
