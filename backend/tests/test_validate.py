@@ -9,7 +9,9 @@ from smart_dictionary.factory.validate import (
     Context,
     Entry,
     Issue,
+    _clitic_stems,
     _english_tokens,
+    _known_spanish,
     _ngrams,
     score,
     validate,
@@ -88,6 +90,27 @@ def test_v3_a_possessive_shows_the_headword():
     assert "V3" not in found(doc)
 
 
+def test_v3_headwords_with_periods_or_digits_stay_whole():
+    assert _english_tokens("The store closes at 9 p.m. on weekdays.") == [
+        "the", "store", "closes", "at", "9", "p.m", "on", "weekdays",
+    ]  # fmt: skip
+    for lemma, pos, code, texts in (
+        ("p.m.", "adverb", "adv", ["The store closes at 9 p.m. on weekdays.",
+                                   "My last class ends at 4 p.m. on Fridays."]),
+        ("MP3 player", "noun", "n", ["Diego lost his MP3 player on the bus.",
+                                     "My old MP3 player still works perfectly well."]),
+    ):  # fmt: skip
+        key = f"en:{lemma.lower().replace(' ', '_')}:{code}"
+        entry = Entry(key=key, lemma=lemma, pos=pos, kind="word")
+        doc = go_doc()
+        doc.update(key=key, lemma=lemma, pos=pos, irregular_forms=[], pronunciations=[])
+        sense(doc)["key"] = f"{key}#1"
+        sense(doc)["grammar"] = None
+        for number, (example, text) in enumerate(zip(sense(doc)["examples"], texts, strict=True)):
+            example.update(key=f"{key}#1.ex{number + 1}", text=text)
+        assert "V3" not in found(doc, entry), lemma
+
+
 def test_v4_definitions():
     doc = go_doc()
     sense(doc)["definition"] = "to go from one place to another"
@@ -126,6 +149,16 @@ def test_v5_spanish_words_that_english_shares_still_read_as_spanish():
     assert validate(GO, doc, context) == []
     translations["es-419"] = "The hotel is very good."
     assert {issue.check for issue in validate(GO, doc, context)} == {"V5"}
+
+
+def test_v6_reads_reflexive_verbs_as_their_verb():
+    assert _clitic_stems("asearse") == ["asear"]
+    assert _clitic_stems("darselo") == ["dar"]
+    assert _clitic_stems("acostandose") == ["acostando"]
+    assert _clitic_stems("casa") == []
+    lexicon = frozenset({"asear", "dar"})
+    assert _known_spanish("asearse", lexicon) and _known_spanish("darselo", lexicon)
+    assert not _known_spanish("xqzwse", lexicon)
 
 
 def test_v6_equivalents_are_real_spanish():

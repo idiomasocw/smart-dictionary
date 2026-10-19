@@ -700,7 +700,7 @@ A re-run replaces the undecided candidates and keeps the decided ones. Seed cand
 Wiktionary sense hints are cut to about 12 words each. They only signal which meanings exist; validator V9 enforces originality.
 
 **Built (`factory/packs.py`):**
-- **`forms`:** these come from LemmInflect, as search's do, mapped to the entry notation (`N;PL`, `V;PST`), never including the headword. A phrasal verb inflects its verb (*gave up*). UniMorph adds only irregular forms beyond those, for the entry's part of speech. UniMorph alone isn't reliable: it has no plural for *house*, only the annotation "uncountable" in its place.
+- **`forms`:** these come from LemmInflect, as search's do, mapped to the entry notation (`N;PL`, `V;PST`), never including the headword. A phrasal verb inflects its verb (*gave up*). UniMorph adds only irregular forms beyond those, for the entry's part of speech. UniMorph alone isn't reliable: it has no plural for *house*, only the annotation "uncountable" in its place. An extra must be one plain lowercase word of one part of speech. That drops UniMorph's slips: *graying* tagged as a comparative of *gray*, the annotation "American spelling", and "Child.".
 - **The pack also carries the seed candidate's variants, patterns, flags and original list lines.**
 
 `POST /v1/factory/batches` returns one pack per entry, and `GET /v1/factory/batches/{id}` reports a batch's state. Both take a bearer token with the `factory` scope, created with `smart-dictionary factory token --name <label>`.
@@ -766,6 +766,8 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
   - **V8** compares the words of two definitions until sense embeddings exist.
   - **V3** matches inflected forms and multiword patterns without spaCy, including split phrasal verbs within `max_gap`.
   - **V3 and V4 read a possessive as its word:** *the company's profits* shows *company*, and *someone's* is as basic as *someone*.
+  - **A word keeps its inner periods and digits** (*p.m.*, *e.g.*, *MP3*), as its headword does. Splitting them made every example of *a.m.*, *p.m.*, *e.g.*, *i.e.*, *a.k.a.*, *B.C.*, *MP3 player* and *omega-3 fatty acid* fail V3, so those entries could never publish.
+  - **V6's Spanish lexicon** is the frequency list (Zipf ≥ 2.35), UniMorph, and the Spanish words in Wiktionary's translations (`ref_spanish_words`, revision 0009). The last one adds real words the others lack: *ralo*, *entrecano*, *mesabanco*. A reflexive verb counts as its verb (*asearse* → *asear*).
 - **V10's blocklist is only a floor.** The reviewer and the spot checks catch the rest.
 - **The checks were calibrated against the real reference data.** The 12 hand-written entries and the style guide's example pass with no issues. An English gloss in the Spanish layer, an invented equivalent, a definition in rare words and the headword in its own definition are all caught.
 - **The score starts at 1:**

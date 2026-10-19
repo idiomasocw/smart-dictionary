@@ -87,6 +87,9 @@ def _load(
                 db.replace_dataset(conn, dataset, version=version, sha256=sha256)
                 count = db.copy_rows(conn, table, columns, replay())
                 db.finish_dataset(conn, dataset.id, count)
+                if table == "ref_wiktionary":
+                    # The Spanish lexicon reads Wiktionary's translations (revision 0009).
+                    conn.execute("refresh materialized view ref_spanish_words")
             return count
         except psycopg.OperationalError as error:
             if error.sqlstate is not None or attempt == LOAD_ATTEMPTS:

@@ -47,7 +47,10 @@ MIN_DUPLICATE_OVERLAP = 0.8
 NGRAM = 8
 SLOT_GAP = 4  # words an open slot (sb, sth, one's) can take
 
-WORD = re.compile(r"[^\W\d_]+(?:['-][^\W\d_]+)*")
+# A word: letters and digits, joined by an apostrophe, a hyphen or a period inside it, so
+# p.m., e.g. and MP3 stay whole, as their headwords do. A period that ends a sentence or
+# an abbreviation isn't followed by a letter, so it stays out.
+WORD = re.compile(r"[^\W_]+(?:['.\-][^\W_]+)*")
 QUOTED = re.compile(r"«[^»]*»")
 IPA_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzæɑɐɒəɚɛɜɝɪɨʊʉɔʌøœɤɯβçðɖɟɡɣɦʝɫɬɭʎɱŋɲɳɹɾɽʀʁʂʃʈθʋʍχʐʒʔʕːˑˈˌʰʲʷ̥̩̯̃͡ "
@@ -106,11 +109,13 @@ class Context:
         vocab = conn.execute(
             "select lemma_norm from ref_lists where dataset_id = any(%s)", (DEFINING_LISTS,)
         ).fetchall()
+        lexicon = sorted({*tokens, *(stem for token in tokens for stem in _clitic_stems(token))})
         spanish = conn.execute(
             "select word from ref_freq where language = 'es' and word = any(%(t)s)"
             " union select form_norm from ref_forms"
-            " where language = 'es' and form_norm = any(%(t)s)",
-            {"t": tokens},
+            " where language = 'es' and form_norm = any(%(t)s)"
+            " union select word from ref_spanish_words where word = any(%(t)s)",
+            {"t": lexicon},
         ).fetchall()
         zipf = conn.execute(
             "select language, word, max(zipf) from ref_freq"
@@ -351,7 +356,7 @@ def _spanish(doc: EntryDoc, context: Context) -> Iterator[Issue]:
         token
         for term in _equivalent_terms(raw)
         for token in _spanish_tokens(term)
-        if token not in context.spanish
+        if not _known_spanish(token, context.spanish)
     ]
     if unknown:
         severity: Severity = "error" if len(unknown) > MAX_UNKNOWN_EQUIVALENT_WORDS else "warn"
@@ -404,6 +409,26 @@ def _equivalent_terms(raw: dict[str, Any]) -> Iterator[str]:
         for equivalent in _list(layer.get("equivalents")):
             if isinstance(equivalent.get("term"), str):
                 yield equivalent["term"]
+
+
+# Pronouns Spanish attaches to an infinitive or a gerund (asearse, dárselo, acostándose),
+# longest first. Word lists hold the bare verb, so V6 also accepts the verb.
+CLITICS = ("selas", "selos", "sela", "selo", "nos", "les", "los", "las", "se", "me", "te",
+           "os", "le", "lo", "la")  # fmt: skip
+VERB_ENDINGS = ("ar", "er", "ir", "ando", "iendo", "yendo")
+
+
+def _clitic_stems(token: str) -> list[str]:
+    """The verb under attached pronouns: asearse -> asear, acostandose -> acostando."""
+    return [
+        token[: -len(clitic)]
+        for clitic in CLITICS
+        if token.endswith(clitic) and token[: -len(clitic)].endswith(VERB_ENDINGS)
+    ]
+
+
+def _known_spanish(token: str, lexicon: frozenset[str]) -> bool:
+    return token in lexicon or any(stem in lexicon for stem in _clitic_stems(token))
 
 
 def _spanish_tokens(text: str) -> list[str]:

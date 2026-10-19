@@ -13,9 +13,10 @@ from smart_dictionary.api.app import create_app
 from smart_dictionary.db.sync import connect
 from smart_dictionary.factory import lease, progress, tokens
 from smart_dictionary.factory import queue as queue_module
-from smart_dictionary.factory.packs import build
+from smart_dictionary.factory.packs import _forms, build
 from smart_dictionary.factory.queue import queue
 from smart_dictionary.factory.submit import BatchClosed, Submission, submit
+from smart_dictionary.factory.validate import Context
 
 THRESHOLD = 0.7
 
@@ -156,6 +157,32 @@ def test_packs_carry_the_facts(migrated_database_url):
     assert go.originals == ["go"] and go.existing is None and go.repair is None
     assert packs["en:realize:v"].variants == [{"form": "realise", "regions": ["UK"]}]
     assert packs["en:run_into:phrv"].wiktionary_hints.senses == ["To meet someone unexpectedly."]
+
+
+def test_pack_forms_skip_slips_in_unimorph():
+    entry = {"lemma": "gray", "pos": "adjective", "kind": "word"}
+    rows = [
+        {"form": form, "features": features, "head": features.split(";")[0]}
+        for form, features in [
+            ("graying", "ADJ;CMPR"),  # really the verb's participle, listed below
+            ("graying", "V;V.PTCP;PRS"),
+            ("American spelling", "ADJ;SPRL"),  # an annotation
+            ("Gray.", "ADJ"),  # the headword again
+        ]
+    ]
+    assert [(form.form, form.features) for form in _forms(entry, rows)] == [
+        ("grayer", "ADJ;CMPR"),
+        ("grayest", "ADJ;SPRL"),
+    ]
+
+
+def test_the_spanish_lexicon_includes_wiktionary_translations(migrated_database_url):
+    with connect() as conn:
+        world(conn)
+        conn.execute("refresh materialized view ref_spanish_words")
+        doc = {"senses": [{"key": "en:x:n#1", "l1": {"es-419": {"gloss": "x", "equivalents": [
+            {"term": "toparse con", "match": "exact"}]}}}]}  # fmt: skip
+        assert {"toparse", "con"} <= Context.load(conn, [], [doc]).spanish
 
 
 def test_factory_api_needs_its_token(migrated_database_url, anyio_backend_options):

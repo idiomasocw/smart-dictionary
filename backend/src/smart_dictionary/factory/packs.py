@@ -5,6 +5,7 @@ words of each, only to show which meanings exist; validator V9 keeps their wordi
 entries. Packs are built for the whole batch with one query per source.
 """
 
+import re
 import uuid
 from collections import defaultdict
 from typing import Any
@@ -27,6 +28,7 @@ MAX_FORMS = 24
 UNIMORPH_POS = {"noun": "N", "verb": "V", "adjective": "ADJ"}
 NOT_FORMS = ["countable", "uncountable", "plural", "singular", "none"]
 WORD_SHAPE = r"^[a-z][a-z' .-]*$"
+PLAIN_FORM = re.compile(r"[a-z][a-z'-]*")
 # LemmInflect's Penn tags in the UniMorph-style notation entries use (irregular_forms).
 PENN_FEATURES = {
     "NNS": "N;PL",
@@ -192,10 +194,25 @@ def _forms(entry: dict[str, Any], unimorph: list[dict[str, Any]]) -> list[Form]:
         if tag in PENN_FEATURES and form != lemma
     ]
     known = {lemma} | {form.form for form in found}
+    # UniMorph's extras are its irregular forms of a single word, so each is one plain
+    # lowercase word of one part of speech. Anything else is a slip in the data: a form it
+    # also lists under another part of speech (graying as "ADJ;CMPR" and as the verb's
+    # participle), an annotation ("American spelling"), or the headword again ("Child.").
+    heads: dict[str, set[str]] = {}
     for row in unimorph:
-        if kind == "word" and row["head"] == UNIMORPH_POS.get(pos) and row["form"] not in known:
-            found.append(Form(form=row["form"], features=row["features"]))
-            known.add(row["form"])
+        heads.setdefault(row["form"], set()).add(row["head"])
+    for row in unimorph:
+        form = row["form"]
+        if (
+            kind == "word"
+            and row["head"] == UNIMORPH_POS.get(pos)
+            and form not in known
+            and PLAIN_FORM.fullmatch(form)
+            and form != lemma.lower()
+            and heads[form] == {row["head"]}
+        ):
+            found.append(Form(form=form, features=row["features"]))
+            known.add(form)
     return _unique(found)[:MAX_FORMS]
 
 
