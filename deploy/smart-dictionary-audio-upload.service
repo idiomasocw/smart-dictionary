@@ -1,0 +1,8 @@
+[Unit]
+Description=Upload the Smart Dictionary's new audio to S3 (design §10.4)
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash /opt/smart-dictionary/audio-upload.sh
+Nice=10

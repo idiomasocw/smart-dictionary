@@ -273,6 +273,9 @@ class DictionaryStack(Stack):
             # Cache that answer only briefly, so a file uploaded a moment later shows up.
             error_responses=[cloudfront.ErrorResponse(http_status=403, ttl=Duration.seconds(30))],
         )
+        # The host uploads the audio container's files (deploy/audio-upload.sh): it may add
+        # files under the layout's folder, never read, list or delete them.
+        audio.grant_put(host_role, "v1/*")
         ssm.StringParameter(
             self,
             "AudioBaseUrl",

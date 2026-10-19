@@ -9,6 +9,8 @@
 # 3. Starts the new containers and waits for the API's health check. If it doesn't pass,
 #    the previous image goes back up and the script fails. Migrations stay applied, so
 #    each one must work with the code before it.
+# 4. Starts the audio container, and installs the timer that uploads its files
+#    (audio-upload.sh). Audio trouble is reported but never fails the deploy.
 set -euo pipefail
 
 IMAGE=${1:?usage: deploy.sh <image>}
@@ -57,18 +59,27 @@ docker compose pull --quiet
 docker compose run --rm migrate
 
 previous=$(cat current-image 2>/dev/null || true)
-if docker compose up --detach --wait --wait-timeout 180 --remove-orphans; then
+if docker compose up --detach --wait --wait-timeout 180 --remove-orphans caddy api; then
   echo "$IMAGE" >current-image
   echo "deployed $IMAGE"
 else
   echo "the new containers didn't pass their health checks" >&2
   docker compose logs --tail 80 api >&2 || true
   if [[ -n $previous && $previous != "$IMAGE" ]]; then
-    IMAGE=$previous docker compose up --detach --wait --wait-timeout 180 --remove-orphans &&
-      echo "rolled back to $previous" >&2
+    IMAGE=$previous docker compose up --detach --wait --wait-timeout 180 --remove-orphans \
+      caddy api && echo "rolled back to $previous" >&2
   fi
   exit 1
 fi
+
+# Audio (design §10.4). The container writes to the outbox as its own user (uid 10001);
+# the timer uploads with this host's role every minute.
+install -d -o 10001 -g 10001 -m 750 "$DIR/audio-outbox"
+install -m 644 "$DIR/smart-dictionary-audio-upload.service" \
+  "$DIR/smart-dictionary-audio-upload.timer" /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now smart-dictionary-audio-upload.timer
+docker compose up --detach audio || echo "warning: the audio container didn't start" >&2
 
 # Keep a week of images for quick rollbacks; ECR keeps the last 20.
 docker image prune --all --force --filter "until=168h" >/dev/null

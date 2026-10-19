@@ -314,9 +314,57 @@ aws s3 rm "s3://$BUCKET/v1/_check/hello.txt"
 
 The last line removes the test file. Versioning keeps it for 90 days, which costs nothing.
 
+## Audio generation
+
+**What runs.** Design §10.4 has the details:
+- **The `audio` container** voices what published entries lack, with Kokoro on one CPU core, into `/opt/smart-dictionary/audio-outbox`.
+- **A timer on the host** (`smart-dictionary-audio-upload.timer`) uploads those files every minute with the host's own role, so no container holds AWS credentials.
+- **Only uploaded files get links:** the entry cards link a file once its upload is confirmed.
+
+**Turning it on, once, in this order:**
+1. **The upload permission.** It lets the host's role add files under `v1/` in the audio bucket. From `infra/cdk`:
+
+   ```bash
+   cd infra/cdk
+   npx cdk diff
+   npx cdk deploy --require-approval never
+   cd ../..
+   ```
+
+   `cdk diff` should show a single change: `HostRole/DefaultPolicy` gains `s3:PutObject` and its siblings on `${Audio.Arn}/v1/*`.
+2. **The app deploy**, as usual, after the audio code is pushed:
+
+   ```bash
+   gh workflow run deploy.yml --repo idiomasocw/smart-dictionary
+   ```
+
+   It applies migration 0008, starts the `audio` container after the API is healthy, and installs the timer. If the audio container fails, the deploy still succeeds, with a warning.
+
+**The first start** downloads Kokoro's model, about 340 MB, into the `kokoro_models` volume. Later starts only check its SHA-256.
+
+**Checking it.** Open a shell on the host with the `SessionCommand` output, then:
+
+```bash
+sudo -i
+cd /opt/smart-dictionary
+IMAGE=$(cat current-image) docker compose logs --tail 20 audio
+systemctl list-timers smart-dictionary-audio-upload.timer
+journalctl -u smart-dictionary-audio-upload.service --since -15min --no-pager | tail
+```
+
+- **The audio log** shows a line per busy pass, such as `made 100 files (180 s of audio in 150 s, x1.2 real time), confirmed 100 uploads`. The real-time factor tells you whether one core keeps up. At 40 entries an hour (about 15 minutes of audio), anything above about x0.3 does.
+- **The timer** should show a next run less than a minute away.
+- **In Supabase's SQL editor**, uploaded and waiting files:
+
+  ```sql
+  select count(*) filter (where uploaded_at is not null) as uploaded,
+         count(*) filter (where uploaded_at is null) as waiting
+  from audio_assets;
+  ```
+
 ## Not yet
 
 These arrive with the features that need them (design §11):
-- the worker, and the audio job that fills the bucket;
+- the worker for the other background jobs;
 - the nightly `pg_dump` to S3;
 - Uptime Kuma.

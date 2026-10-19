@@ -45,6 +45,26 @@ services:
       retries: 3
       start_period: 20s
 
+  # Pronunciation and example audio (design §10.4). Voices what published entries lack with
+  # Kokoro, into the outbox that the host's uploader (audio-upload.sh) sends to S3, so this
+  # container holds no AWS credentials. One CPU core at most: lookups keep the other.
+  # deploy.sh starts it after the API is healthy, and its failure never fails a deploy.
+  audio:
+    image: ${IMAGE:?set IMAGE to the image to run}
+    restart: unless-stopped
+    command: ["audio", "loop"]
+    env_file: [app.env]
+    environment:
+      ENVIRONMENT: prod
+      AUDIO_MODEL_DIR: /models
+      AUDIO_OUTBOX: /outbox
+      AUDIO_THREADS: "1"
+    volumes:
+      - kokoro_models:/models
+      - ./audio-outbox:/outbox
+    cpus: 1.0
+    mem_limit: 1500m
+
   # One-off: `docker compose run --rm migrate` applies the migrations as the owner.
   migrate:
     image: ${IMAGE:?set IMAGE to the image to run}
@@ -57,3 +77,4 @@ services:
 volumes:
   caddy_data: {}
   caddy_config: {}
+  kokoro_models: {}  # downloaded once, checked against its SHA-256 at every start
