@@ -1,8 +1,180 @@
 # Content factory
 
-The Claude Code routine that writes dictionary entries lives here. The rubric, routine instructions and batch scripts arrive later in Phase 2 (see `docs/04-roadmap.md` and `docs/03-system-design.md` §6).
+A Claude Code routine writes the dictionary's entries here, a batch at a time:
+1. It leases words from the API.
+2. Writer sub-agents draft the entries.
+3. Reviewer sub-agents judge them.
+4. The server checks every entry again and decides what's published.
 
-**The server's API.** Every call sends `Authorization: Bearer <token>`, created with `smart-dictionary factory token --name <label>`.
+The design is in `docs/03-system-design.md` §6.
+
+| Path | Contents |
+|---|---|
+| `ROUTINE.md` | The run instructions. The routine's prompt points here |
+| `STYLE.md` | The editorial style guide: how to write every part of an entry. It details the product's content standard (`docs/02-product-spec.md` §6) and matches the server's checks |
+| `rubric.md` | How reviewers judge an entry |
+| `schema/entry.v1.json` | JSON Schema of an entry document. **Generated**: never edit it by hand. After changing `backend/src/smart_dictionary/core/entrydoc.py`, run `uv run smart-dictionary schema export` from `backend/`. A test fails if the file is stale |
+| `bin/` | The batch scripts, below |
+| `work/` | One run's files. Git ignores it |
+
+`.claude/skills/factory-batch/SKILL.md` runs the same flow in a Claude Code session on your PC.
+
+## The batch scripts
+
+The scripts need Python 3.9 or later and nothing installed, so the routine's environment needs no setup script. They do no checking of their own: `validate.py` asks the server, so there's only one set of rules. Run them from the repo root.
+
+| Script | What it does | Writes |
+|---|---|---|
+| `pull_batch.py --size 40 --groups 4 --label "<label>"` | Leases the next batch and splits it into one group per writer, in queue order. Exits 2 when the queue is empty. It won't overwrite a batch that was never submitted unless you pass `--discard` | `work/batch.json`, `work/groups/group-N.json` |
+| `validate.py work/out/group-N.json` | Runs the server's checks on drafts without saving anything. Exits 1 when any entry has an error | nothing |
+| `submit_batch.py --model <model ID>` | Submits every written entry with its review, and records which instructions produced it: `prompt_version` is a hash of ROUTINE, STYLE, the rubric and the schema | `work/result.json` |
+
+They read two environment variables:
+- **`FACTORY_API`** is the server: production (`https://dictionary.onecultureworld.com`) when it's unset.
+- **`FACTORY_TOKEN`** is sent as `Authorization: Bearer <token>`, when it's set.
+
+A run's files:
+
+```
+work/
+  batch.json            the lease: batch ID, expiry and every grounding pack
+  groups/group-N.json   writer N's packs
+  out/group-N.json      writer N's entries: [{key, doc}]
+  review/group-N.json   the verdicts on group N: [{key, verdict, notes, needs_repair}]
+  result.json           the server's outcome for each entry
+```
+
+## Factory tokens
+
+A token lets its holder lease words and submit entries, nothing else. The database keeps only its hash, so a token is shown once, when it's created.
+
+**For production**, run this from `backend/` in Git Bash:
+
+```bash
+read -rsp "Owner DATABASE_URL (session pooler): " DATABASE_URL && echo && export DATABASE_URL
+uv run smart-dictionary factory token --name routine | tr -d '\r\n' | clip
+unset DATABASE_URL
+```
+
+- **The first line** points the command at production without showing the URL or saving it in your shell history, as in `infra/README.md`.
+- **The second line** creates the token. `tr` drops the line break after it, and `clip` puts it on the clipboard instead of the screen, ready to paste into the routine's settings.
+- **The third line** forgets the URL, so later commands go back to the local database.
+
+To cut a token off, for example if it leaks, run `uv run smart-dictionary factory revoke --name routine` the same way, then create a new one.
+
+**For the local database**, run `uv run smart-dictionary factory token --name local` with no URL set.
+
+## Setting up the cloud routine
+
+A routine is a saved Claude Code task, at claude.ai/code/routines. Each run starts a fresh cloud session, which:
+1. clones this repository from GitHub's default branch;
+2. follows `ROUTINE.md`;
+3. ends.
+
+The routine's settings live on claude.ai, not in the repo, so this section is the record of what they should be. Routines are a research preview, so the screens may change; what each setting is for won't.
+
+Do these steps once, in order.
+
+### Step 1. Deploy the factory
+
+The factory's API calls and its database change (revision 0007) aren't in production until you deploy them. A run follows the files on GitHub's `main`, so push them too.
+
+Push your commits, then deploy as `infra/README.md` describes. The deploy applies the migration:
+
+```bash
+gh workflow run deploy.yml --repo idiomasocw/smart-dictionary
+```
+
+When the deploy is done, check that production has the factory:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://dictionary.onecultureworld.com/v1/factory/batches
+```
+
+- **`401` is right:** the call exists and asks for a token.
+- **`404`** means the deploy hasn't happened yet.
+
+### Step 2. Queue the words
+
+A run leases only queued words, and production's queue starts empty. From `backend/`, point the shell at production with the `read -rsp` line from "Factory tokens", then:
+
+```bash
+uv run smart-dictionary seeds queue --lemma <word> --lemma <word> --dry-run
+uv run smart-dictionary seeds queue --lemma <word> --lemma <word>
+unset DATABASE_URL
+```
+
+- **`--dry-run`** shows what would be queued, and changes nothing.
+- **A word can have several entries,** one per part of speech: `--lemma house` queues the noun and the verb.
+- **Without `--lemma`,** `--limit 50` queues the 50 candidates with the highest priority.
+
+### Step 3. Create the token
+
+Follow "Factory tokens" above, with `--name routine`. Keep the token on the clipboard for step 4.
+
+### Step 4. Create the environment
+
+An environment is the machine a cloud session runs on: what it can reach on the network, and which secrets it holds. At claude.ai/code, create a new environment from the environment selector:
+
+| Setting | Value | Why |
+|---|---|---|
+| Name | `smart-dictionary-factory` | A separate environment, so these rules don't affect your other cloud sessions |
+| Network access | **Custom**, with `dictionary.onecultureworld.com` as the only allowed domain. Leave "Also include default list of common package managers" unchecked | The run needs only the API; GitHub has its own path. Blocking every other host means text planted in a grounding pack can't make the session send data to a server of someone else's choosing |
+| Environment variables | none | Anyone who uses the environment can read them, and the scripts already default to production |
+| Setup script | empty | The scripts use only Python's standard library, so there's nothing to install |
+| Network secrets | Add one: type **Bearer**; name `factory token`; allowed website `dictionary.onecultureworld.com`; header `Authorization` with prefix `Bearer`; value: paste the token | Anthropic's proxy adds the header after each request leaves the session's machine, so the token never enters it. Claude can't print or leak a token it never sees. Once saved, nobody can view the value, you included |
+
+### Step 5. Try one small batch
+
+Before creating the routine, run one small batch in an ordinary cloud session, where you can watch it and step in. At claude.ai/code, pick the repository `idiomasocw/smart-dictionary` and the environment `smart-dictionary-factory`, then send:
+
+> Follow factory/ROUTINE.md for one batch, but lease with `--size 5 --groups 1`. Before step 1, run `python3 --version` and tell me what it printed.
+
+**Success looks like this:**
+1. The lease prints its group.
+2. A writer and a reviewer sub-agent run.
+3. `submit_batch.py` prints a summary.
+
+The 5 entries are then live in the dictionary, or back in the queue for repair.
+
+**What the errors mean:**
+- **`401 unauthorized`:** the token didn't reach the API. Check that the secret's allowed website is exactly `dictionary.onecultureworld.com`.
+- **`403` with `host_not_allowed`:** the network allowlist is missing the host.
+- **`CERTIFICATE_VERIFY_FAILED`:** Python doesn't trust the proxy's certificate. Send me the message.
+- **"the queue is empty"** (exit code 2): step 2 queued nothing in production.
+
+### Step 6. Create the routine
+
+At claude.ai/code/routines, choose **New routine**:
+
+| Setting | Value | Why |
+|---|---|---|
+| Instructions | The prompt below | A run gets only this prompt. It points at `ROUTINE.md`, so changing how runs work is a commit, not a settings edit |
+| Model | The selector in the prompt box: Sonnet 5.5 or Opus 5.5 | Every run uses it. `submit_batch.py` records the model with each entry, so Pilot A can compare the two |
+| Repository | `idiomasocw/smart-dictionary` | Each run clones it fresh, so it always follows the latest pushed instructions |
+| Environment | `smart-dictionary-factory` | Step 4's network rules and token |
+| Connectors | Remove them all | A new routine includes every connector you've connected, and a run can use all their tools, writes included, without asking |
+| Trigger | None for now: you press **Run now** | A schedule comes after the pilot, once a batch's usage is measured. The minimum interval is an hour |
+
+The prompt:
+
+```
+Run one batch of the Smart Dictionary's content factory: follow factory/ROUTINE.md from step 1 to step 6.
+
+Nobody will answer questions during this run. Write only under factory/work/, and don't commit, push or open a pull request. The environment adds the API's token by itself, so don't look for one.
+
+You're done when submit_batch.py has printed its summary and you've written the step 6 report, or when step 1 finds the queue empty.
+```
+
+### Reading a run
+
+- **The run list's green status** only means the session started and ended without an infrastructure problem; a failed batch is green too. Open the run to read its report: the summary line, the time taken, and anything to look at.
+- **A run leaves no branch.** Everything it writes goes to `factory/work/`, which git ignores. A `claude/` branch from a run means it changed a file it shouldn't have, so look at it before deleting it.
+- **If a run dies midway,** its words return to the queue 3 hours after they were leased.
+
+## The server's API
+
+Every call sends `Authorization: Bearer <token>`.
 
 | Call | What it does |
 |---|---|
@@ -10,8 +182,3 @@ The Claude Code routine that writes dictionary entries lives here. The rubric, r
 | `POST /v1/factory/validate` `{entries: [{key, doc}]}` | Runs the server's checks (V1–V11 and the length limits) without saving anything |
 | `POST /v1/factory/batches/{id}/entries` `{model, prompt_version, entries: [{key, doc, review, needs_repair}]}` | Submits documents. The server checks them again, then publishes, repairs or quarantines each one |
 | `GET /v1/factory/batches/{id}` | The batch and the status of each of its entries |
-
-| Path | Contents |
-|---|---|
-| `STYLE.md` | The editorial style guide: how to write every part of an entry. It details the product's content standard (`docs/02-product-spec.md` §6) and matches the server's checks |
-| `schema/entry.v1.json` | JSON Schema of an entry document. **Generated**: never edit it by hand. After changing `backend/src/smart_dictionary/core/entrydoc.py`, run `uv run smart-dictionary schema export` from `backend/`. A test fails if the file is stale |

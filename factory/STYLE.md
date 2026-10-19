@@ -26,13 +26,19 @@ For each word you get a **grounding pack**:
 - **Wiktionary hints:** a few short sense hints and Spanish candidates. They only show which meanings exist; never copy them (§17).
 - **Context:** related entries already published, and for a repair, the published keys and what failed.
 
+Some fields come from the seed list the words were picked from:
+- **`priors.lists`** says where the word was found. `owner:<file>` is one of the owner's own lists; `cefrj` and `octanove-c1c2` give CEFR levels; `ngsl`, `ngsl-spoken` and the like list common words. Use them as evidence for the level (§4).
+- **`originals`** are the owner's list lines, as written. They show the meaning or phrase the owner had in mind, such as `(all) at sea (about something)`.
+- **`patterns`** are fuller forms of a multiword entry from those lines, with its slots: `break the news to someone`. Use them for the pattern (§10, §14).
+- **`flags`** are notes from building the list, such as "listed as phrasal verb, shaped like an idiom" or "dropped leading 'be'". They mark packs worth a second look. If one says the kind or part of speech may be wrong and you agree, leave the word out and say so.
+
 You write **one entry document per word**, valid against the schema:
 
 | Part | Who decides |
 |---|---|
 | `schema_version` (1), `language` ("en"), `key`, `lemma`, `pos`, `kind`, `variants` | The pack. Copy them unchanged. |
 | `pronunciations` | The pack's IPA (§15) |
-| `irregular_forms` | The pack lists inflected forms. Add an irregular form only if the pack lacks it, never a regular one. |
+| `irregular_forms` | Usually empty. The pack's forms already include the irregular ones the server knows (*went*, *gone*, *leaves*), and the server adds those itself; repeating one is harmless. Add a form only if it's irregular and missing from the pack. |
 | `cefr`, `senses`, `related`, `pattern` | You |
 | Frequency band, audio, inflected forms, embeddings, quality | The server. Don't write them. |
 
@@ -49,7 +55,9 @@ You write **one entry document per word**, valid against the schema:
 - **How many:** 1–4 for most words. Up to 6 for very polysemous A1–B1 verbs (*get*, *make*, *take*), and never more than 6.
 - **Phrasal verbs:** give the literal and idiomatic senses separately when both are common (*turn off* the light / *turn* someone *off*).
 - **Sensitive senses** (sexual, vulgar, insulting) go in only when they're common and useful. Label them (§9), and keep their examples neutral.
-- **Keys:** a new entry's senses are `#1`, `#2` and so on, in order. A sense's examples are `.ex1`, `.ex2`, and its notes `.note1`. Numbers are identities: never renumber them.
+- **Keys:** a new entry's senses are `#1`, `#2` and so on, in order. A sense's examples are `.ex1`, `.ex2`, and its notes `.note1`. Numbers are identities: never renumber them once the entry is published.
+  - **Before then** (the pack has no `existing`), you may still insert a sense where it belongs, in a fix round for example, and number the senses again in order.
+  - **Once published,** a new sense takes the next unused number, and you place it in the list by frequency. The list's order is the order students see; the numbers only identify the senses.
 
 ## 4. Levels (CEFR)
 
@@ -113,7 +121,7 @@ Every sense needs it. Write **neutral Latin American Spanish**:
 - **Use names and places from Latin America, Brazil and the Arab world**, alongside others: Camila, Diego, Mariana, Luis, João, Fernanda, Fatima, Omar, Layla; Bogotá, Lima, Monterrey, São Paulo, Amman. Never use real people, brands or celebrities.
 - **Safe for 16 and up:**
   - nothing sexual, violent, cruel or hateful;
-  - no drugs, no partisan politics, no religious controversy;
+  - no drugs, no partisan politics, no religious controversy (neutral sentences about how institutions work are fine: *The bill passed the House last week.*);
   - no stereotypes, and no medical, legal or financial advice.
 - **Use US English** (*vacation*, *apartment*, *cell phone*), unless the sense is used only in the UK.
 - **Write plain text,** with no markup and no quotation marks around the headword. The app highlights it.
@@ -221,6 +229,7 @@ Define what the whole expression means, not its literal meaning.
   - write `r`, not Britfone's `ɹ`;
   - add no syllable dots, slashes or brackets.
 - **Homographs with the same part of speech:** when the pronunciation changes with the meaning, give one pronunciation per sense with `sense_keys`. *bass* (fish) is `bæs`; *bass* (music) is `beɪs`.
+- **A different part of speech, a different sound:** the pack's IPA belongs to the spelling, not the part of speech, so for *house*, *use*, *close*, *live*, *record* or *present* it may be the other one's. The verb *house* is `haʊz`, though the pack gives the noun's `haʊs`. Write this part of speech's pronunciation; a V7 warning is expected then.
 - **Missing IPA:** if the pack has none (common for multiword entries), leave `pronunciations` empty.
 
 ## 16. Spelling and characters

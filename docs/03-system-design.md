@@ -707,23 +707,26 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
 | `factory/STYLE.md` | The editorial style guide (product spec §6) |
 | `factory/rubric.md` | The reviewer's checklist |
 | `factory/schema/entry.v1.json` | Generated from the Pydantic models |
-| `factory/bin/pull_batch.py` · `validate.py` · `submit_batch.py` | Batch I/O and local validation (same validators as the server) |
-| `factory/golden/` | Golden-set entries and your ratings |
+| `factory/bin/pull_batch.py` · `validate.py` · `submit_batch.py` | Batch I/O, and checking drafts with the server's own checks (`POST /v1/factory/validate`) |
+| `factory/golden/` | Golden-set entries and your ratings (Pilot A) |
 | `.claude/skills/factory-batch/SKILL.md` | The **local twin**: the same flow in an interactive Claude Code session on your PC |
 
-**Routine configuration**
+**Routine configuration** (the setup steps are in `factory/README.md`)
 - **Model:** Sonnet 5.5 or Opus 5.5, decided by the golden-set comparison in the pilot.
-- **Network:** *Custom*, with the API host allowlisted (plus PyPI, or vendored wheels, for the validator's dependencies).
-- **Secret:** `FACTORY_TOKEN` is configured as a **network secret** for the API host, so it never enters the VM.
-- **Setup script:** `pip install -r factory/requirements.txt`.
+- **Prompt:** set on the routine, and only points at `factory/ROUTINE.md`, so the run protocol is versioned with the code.
+- **Network:** *Custom*, with only the API host allowlisted. No package registries: the scripts use only Python's standard library, and the checking happens on the server.
+- **Secret:** the factory token is a **network secret** (Bearer) for the API host. Anthropic's proxy adds the header after each request leaves the VM, so the token never enters it and `FACTORY_TOKEN` stays unset in the cloud. The local twin sets it in the shell instead.
+- **Setup script:** none.
+- **Connectors:** none. A routine can use every tool of an included connector without asking.
 
 **Run protocol** (you press *Run now*; each run notifies you when it ends):
 
-1. `pull_batch.py --size 40` calls `POST /v1/factory/batches`, which leases 40 entries (repairs and provisional entries first; 3-hour lease) and writes `work/batch.json`.
-2. The orchestrator splits the batch into **4 groups of 10** and spawns 4 **writer** sub-agents. Each writer reads STYLE, the schema and its 10 packs, writes `work/out/group-N.json`, then runs `validate.py` and fixes errors (at most 3 loops).
-3. Four **reviewer** sub-agents, each in a fresh context, check group N+1 (in rotation) against `rubric.md`. They produce pass/fail plus issues for each sense. The writers fix what they can; anything else is submitted marked `needs_repair` with the issues attached.
-4. `submit_batch.py` calls `POST …/entries`. The server re-validates (it's the authority) and publishes, repairs or quarantines each entry (§6.4).
-5. The orchestrator prints a summary (published / repair / quarantined / time) into the run log.
+1. `pull_batch.py --size 40 --groups 4` calls `POST /v1/factory/batches`, which leases 40 entries (provisional entries first, then repairs; 3-hour lease). It writes `work/batch.json` and splits the packs, in queue order, into **4 groups of 10**.
+2. The orchestrator spawns 4 **writer** sub-agents. Each writer reads STYLE, the schema and its 10 packs, writes `work/out/group-N.json`, then runs `validate.py` and fixes errors (at most 3 rounds).
+3. Four **reviewer** sub-agents, each in a fresh context, check group N+1 (in rotation) against `rubric.md`. Each entry gets `pass`, `fail` or `uncertain`, with notes.
+4. **One fix round:** the writer fixes the failed and uncertain entries, and applies the notes on passed ones that it agrees with. The same reviewer judges only the changed failed and uncertain entries again. Whatever still fails is submitted marked `needs_repair`, with the notes attached.
+5. `submit_batch.py --model <id>` calls `POST …/entries` with the verdicts and a `prompt_version`, a hash of ROUTINE, STYLE, the rubric and the schema. The server re-validates (it's the authority) and publishes, repairs or quarantines each entry (§6.4).
+6. The orchestrator reports the summary (published / repair / quarantined / not written), the time taken and anything to look at.
 
 **Batch size** defaults to 40 (`--size`, `--groups` configurable). It gets tuned from the pilot's usage meter, keeping about 40% of the weekly allowance free for your development work.
 
@@ -749,9 +752,10 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
 
 **Built (`factory/validate.py`, `factory/submit.py`):**
 - **Every check from V1 to V11, plus the style guide's length limits.** Three use stand-ins until their tools exist:
-  - **V5** lets each word vote by frequency instead of using a detector. A word counts as Spanish evidence when wordfreq finds it at least as common in Spanish as in English, and words neither language knows don't vote. Lexicon membership alone failed on real data, because the Spanish web lists everyday English words.
+  - **V5** lets each word vote by frequency instead of using a detector. A word counts as Spanish evidence when wordfreq finds it at least as common in Spanish as in English, and as English evidence only when it's over ten times as common in English. Words in between are shared (*hotel*, *plan*, *real*) and don't vote, and neither do words neither language knows, nor a few everyday Spanish words that English data swamps (*¿has visto?*, *come*, *once*). Lexicon membership alone failed on real data, because the Spanish web lists everyday English words. The first frequency rule flagged every one of 12 correct sentences like *¿Has comido en el bar del hotel?*. With the margin, all 87 Spanish texts in the fixtures and the first dry run score 100%, and their English at most 27%.
   - **V8** compares the words of two definitions until sense embeddings exist.
   - **V3** matches inflected forms and multiword patterns without spaCy, including split phrasal verbs within `max_gap`.
+  - **V3 and V4 read a possessive as its word:** *the company's profits* shows *company*, and *someone's* is as basic as *someone*.
 - **V10's blocklist is only a floor.** The reviewer and the spot checks catch the rest.
 - **The checks were calibrated against the real reference data.** The 12 hand-written entries and the style guide's example pass with no issues. An English gloss in the Spanish layer, an invented equivalent, a definition in rare words and the headword in its own definition are all caught.
 - **The score starts at 1:**

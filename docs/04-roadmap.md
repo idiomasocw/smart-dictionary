@@ -66,7 +66,7 @@ Phase 6                                               ████████�
 | 2.2 | Grounding packs; factory endpoints (lease with `SKIP LOCKED`, submit); lease expiry job | §6.2, §3.3 | CG-2 |
 | 2.3 | Validators V1–V11; quality score; publish transaction + projections | §6.4 | CG-3 |
 | 2.4 | `ROUTINE.md`, `STYLE.md`, `rubric.md`, `pull/validate/submit` scripts; the local skill twin | §6.3 | CG-2 |
-| 2.5 | Configure the routine: Custom network, `FACTORY_TOKEN` network secret, setup script | §6.3 | — |
+| 2.5 | Configure the routine: Custom network, the token as a network secret, no connectors (`factory/README.md`) | §6.3 | — |
 | 2.6 | **Pilot A:** 50 entries → **your golden-set session (~1 h)** → calibrate τ and the rubric; pick Sonnet vs Opus | §6.6 | CG-6 |
 | 2.7 | Embedding bake-off (EmbeddingGemma 2 / bge-m3 / harrier) → fix the vector dimension | §10.3 | LK-7, 8 |
 | 2.8 | Kokoro TTS job (IPA → audio → S3) | §10.4 | EC-1, 3 |

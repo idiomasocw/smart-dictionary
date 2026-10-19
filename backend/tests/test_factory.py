@@ -7,11 +7,9 @@ from typing import Any, LiteralString
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
-from psycopg.types.json import Jsonb
 
-from factory_docs import DEFINING_WORDS, GO_DOC, GO_GLOSS, SPANISH_WORDS, go_doc
+from factory_docs import GO_DOC, go_doc, world
 from smart_dictionary.api.app import create_app
-from smart_dictionary.core.text import norm
 from smart_dictionary.db.sync import connect
 from smart_dictionary.factory import lease, tokens
 from smart_dictionary.factory.packs import build
@@ -19,77 +17,6 @@ from smart_dictionary.factory.queue import queue
 from smart_dictionary.factory.submit import BatchClosed, Submission, submit
 
 THRESHOLD = 0.7
-
-
-def _world(conn: psycopg.Connection) -> None:
-    """Seed candidates for every queue rule, and the reference facts packs and checks use."""
-    for dataset in ("t-forms", "t-ipa", "t-wiki", "ngsl", "t-freq"):
-        conn.execute(
-            "insert into ref_datasets (id, name, version, license, attribution, source_url)"
-            " values (%s, %s, '1', 'test', 'test', 'file:///test')",
-            (dataset, dataset),
-        )
-    for word in DEFINING_WORDS:
-        conn.execute(
-            "insert into ref_lists (dataset_id, lemma, lemma_norm) values ('ngsl', %s, %s)",
-            (word, word),
-        )
-    words = [("es", norm(word, "es")) for word in SPANISH_WORDS] + [
-        ("en", word) for word in DEFINING_WORDS
-    ]
-    for language, word in sorted(set(words)):
-        conn.execute(
-            "insert into ref_freq (dataset_id, language, word, zipf) values ('t-freq', %s, %s, 4)",
-            (language, word),
-        )
-    for form, features in (
-        ("went", "V;PST"),
-        ("gone", "V;V.PTCP;PST"),
-        ("goes", "V;3;SG;PRS"),
-        ("gos", "N;PL"),  # go the noun: not in the verb's pack
-        ("uncountable", "N;PL"),  # UniMorph annotation, not a form
-    ):
-        conn.execute(
-            "insert into ref_forms (dataset_id, language, lemma, lemma_norm, form, form_norm,"
-            " features) values ('t-forms', 'en', 'go', 'go', %s, %s, %s)",
-            (form, form, features),
-        )
-    for variety, ipa in (("en-US", "goʊ"), ("en-GB", "ɡəʊ")):
-        conn.execute(
-            "insert into ref_ipa (dataset_id, word, word_norm, variety, ipa)"
-            " values ('t-ipa', 'go', 'go', %s, %s)",
-            (variety, ipa),
-        )
-    for word, pos, kind, glosses, spanish in (
-        ("go", "verb", "word", [GO_GLOSS, "To leave; to depart."], ["ir", "irse", "ir"]),
-        ("go", "noun", "word", ["A board game for two players."], ["go"]),
-        ("run into", "verb", "phrasal_verb", ["To meet someone unexpectedly."], ["toparse con"]),
-    ):
-        conn.execute(
-            "insert into ref_wiktionary (dataset_id, word, word_norm, pos, pos_raw, kind, glosses,"
-            " translations) values ('t-wiki', %s, %s, %s, %s, %s, %s, %s)",
-            (word, word, pos, pos, kind, glosses, Jsonb({"es": spanish})),
-        )
-    candidates: list[tuple[Any, ...]] = [
-        # lemma, pos, kind, tier, zipf, levels, sources, decision, variants
-        ("go", "verb", "word", 0, 6.70, ["A1"], ["owner:list.txt", "cefrj"], None, []),
-        ("these", "pronoun", "word", 1, 6.04, ["A1"], ["cefrj"], None, []),
-        ("realize", "verb", "word", 0, 4.83, ["A2"], ["owner:list.txt"], None,
-         [{"form": "realise", "regions": ["UK"]}]),
-        ("house", "verb", "word", 0, 5.71, ["C1"], ["owner:list.txt"], None, []),
-        ("run into", "verb", "phrasal_verb", 0, None, [], ["owner:phrasal.txt"], None, []),
-        ("zzword", None, None, 0, 3.0, [], ["owner:list.txt"], None, []),  # uncurated
-        ("DNA", "phrase", "word", 0, 4.0, [], ["owner:list.txt"], None, []),  # no valid entry
-        ("nope", "noun", "word", 0, 5.0, ["A1"], ["owner:list.txt"], "reject", []),
-    ]  # fmt: skip
-    for lemma, pos, kind, tier, zipf, levels, sources, decision, variants in candidates:
-        conn.execute(
-            "insert into seed_candidates (lemma, lemma_norm, pos, kind, tier, zipf, levels,"
-            " sources, decision, variants, originals)"
-            " values (%s, %s, %s, %s::entry_kind, %s, %s, %s, %s, %s, %s, %s)",
-            (lemma, lemma, pos, kind, tier, zipf, levels, sources, decision, Jsonb(variants),
-             [lemma]),
-        )  # fmt: skip
 
 
 def _scalar(conn: psycopg.Connection, query: LiteralString) -> Any:
@@ -100,7 +27,7 @@ def _scalar(conn: psycopg.Connection, query: LiteralString) -> Any:
 
 def test_queue_orders_by_level_then_owner_lists_then_frequency(migrated_database_url):
     with connect() as conn:
-        _world(conn)
+        world(conn)
         preview = queue(conn, dry_run=True)
         # A1 first (the owner's go before CEFR-J's these), then A2, C1, and unleveled last;
         # the uncurated and the rejected candidates never queue.
@@ -121,7 +48,7 @@ def test_queue_orders_by_level_then_owner_lists_then_frequency(migrated_database
 
 def test_queue_picks_headwords_levels_and_a_limit(migrated_database_url):
     with connect() as conn:
-        _world(conn)
+        world(conn)
         assert [item.key for item in queue(conn, lemmas=["realize"], dry_run=True)] == [
             "en:realize:v"
         ]
@@ -148,7 +75,7 @@ def test_factory_tokens_are_stored_hashed_and_scoped(migrated_database_url):
 
 def test_leases_follow_the_queue_and_never_overlap(migrated_database_url):
     with connect() as conn:
-        _world(conn)
+        world(conn)
         queue(conn)
     dsn = migrated_database_url.replace("postgresql+psycopg://", "postgresql://", 1)
     with psycopg.connect(dsn) as first, psycopg.connect(dsn) as second:
@@ -170,7 +97,7 @@ def test_leases_follow_the_queue_and_never_overlap(migrated_database_url):
 
 def test_an_expired_lease_returns_its_entries(migrated_database_url):
     with connect() as conn:
-        _world(conn)
+        world(conn)
         queue(conn, lemmas=["go"])
         first = lease.lease(conn, 5)
         conn.execute("update entries set lease_expires_at = now() - interval '1 minute'")
@@ -187,7 +114,7 @@ def test_an_expired_lease_returns_its_entries(migrated_database_url):
 
 def test_packs_carry_the_facts(migrated_database_url):
     with connect() as conn:
-        _world(conn)
+        world(conn)
         queue(conn)
         batch = lease.lease(conn, 10)
         packs = {pack.key: pack for pack in build(conn, batch.entry_ids)}
@@ -218,7 +145,7 @@ def test_packs_carry_the_facts(migrated_database_url):
 
 def test_factory_api_needs_its_token(migrated_database_url, anyio_backend_options):
     with connect() as conn:
-        _world(conn)
+        world(conn)
         queue(conn)
         token = tokens.create(conn, "routine", ["factory"])
     with TestClient(create_app(), backend_options=anyio_backend_options) as client:
@@ -247,7 +174,7 @@ def test_factory_api_needs_its_token(migrated_database_url, anyio_backend_option
 
 def test_a_valid_entry_publishes_and_closes_its_batch(migrated_database_url):
     with connect() as conn:
-        _world(conn)
+        world(conn)
         queue(conn, lemmas=["go"])
         batch = lease.lease(conn, 1)
         assert batch.id is not None
@@ -276,7 +203,7 @@ def test_a_failing_entry_is_repaired_twice_then_quarantined(migrated_database_ur
     bad = go_doc()
     bad["senses"][0]["examples"] = bad["senses"][0]["examples"][:1]  # V11: 2-3 examples
     with connect() as conn:
-        _world(conn)
+        world(conn)
         queue(conn, lemmas=["go"])
         outcomes = []
         for attempt in range(3):
@@ -299,7 +226,7 @@ def test_a_failing_entry_is_repaired_twice_then_quarantined(migrated_database_ur
 
 def test_only_the_batch_holding_an_entry_can_submit_it(migrated_database_url):
     with connect() as conn:
-        _world(conn)
+        world(conn)
         queue(conn, lemmas=["go", "realize"])
         first, second = lease.lease(conn, 1), lease.lease(conn, 1)
         assert first.id is not None and second.id is not None
@@ -322,7 +249,7 @@ def test_only_the_batch_holding_an_entry_can_submit_it(migrated_database_url):
 
 def test_a_reviewer_verdict_can_hold_an_entry_back(migrated_database_url):
     with connect() as conn:
-        _world(conn)
+        world(conn)
         queue(conn, lemmas=["go"])
         batch = lease.lease(conn, 1)
         assert batch.id is not None
@@ -335,7 +262,7 @@ def test_a_reviewer_verdict_can_hold_an_entry_back(migrated_database_url):
 
 def test_factory_api_checks_and_submits(migrated_database_url, anyio_backend_options):
     with connect() as conn:
-        _world(conn)
+        world(conn)
         queue(conn, lemmas=["go"])
         token = tokens.create(conn, "routine", ["factory"])
     auth = {"Authorization": f"Bearer {token}"}
