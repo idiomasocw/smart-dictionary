@@ -16,12 +16,20 @@ A miss takes one of two paths, by the language it was searched in:
    - every word is known in the query's language and none is blocked;
    - the miss isn't settled already;
    - the student has searches left today.
-2. **Dedupe:** an advisory lock per query, so students asking at once cause one AI job.
+2. **One job at a time:** the lookup claims the miss (`running_since`) before it starts a
+   job, so other lookups answer "generating" without starting another; an advisory lock per
+   query backs it up. A claim older than RUNNING expires, so a crashed job can't hold a word.
 3. **Generate** through the gateway.
 4. **Check and publish:**
    - the factory's checks, with the counts of a short entry (V11);
    - the draft must be for the word asked;
    - it publishes as provisional, unless the factory already holds that key.
+5. **Failures** (no provider answered; a draft that can't make an entry, fails its checks, is
+   about another word or turns the word down; any error) are counted on the miss. For
+   COOL_DOWN after each, lookups answer "unavailable" at once, with no job. After
+   MAX_ATTEMPTS the word goes to the factory, first in its queue, and lookups answer
+   "queued"; one the factory can't take (no seed candidate) stays "unavailable", and
+   `smart-dictionary factory status` lists it.
 """
 
 import logging
@@ -31,6 +39,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import psycopg
+from lemminflect import getAllLemmas
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -44,6 +53,7 @@ from smart_dictionary.core.principal import Principal
 from smart_dictionary.core.text import norm
 from smart_dictionary.db.sync import connect
 from smart_dictionary.factory.packs import MAX_HINTS, hint
+from smart_dictionary.factory.queue import queue
 from smart_dictionary.factory.validate import BLOCKED, Context, Entry, score, validate
 from smart_dictionary.search.service import Query
 
@@ -56,6 +66,12 @@ AI_TASKS = ["provisional_entry", "translate_query"]
 MIN_ZIPF = 1.0  # wordfreq knows the word at least this well
 MAX_WORDS = 4
 RETRY_AFTER_MS = 1500
+# Failed attempts (the owner's choices, 2026-10-20).
+COOL_DOWN = "10 minutes"  # "unavailable", with no AI call, after each failure
+MAX_ATTEMPTS = 3  # then the factory takes the word
+RUNNING = "3 minutes"  # a job's claim expires: longer than a Spanish search's worst case
+# A word that failed its attempts jumps the factory's queue: above any seed's priority.
+ASKED_PRIORITY = 100_000
 CEFR_ORDER = ["A1", "A2", "B1", "B2", "C1", "C2"]
 # Entry statuses a provisional entry may take over: nobody has written the word yet.
 REPLACEABLE = ("candidate", "queued")
@@ -165,9 +181,24 @@ from unnest(cast(:words as text[])) as w
 """)
 
 MISS = text("""
-select status, entry_key from misses
+select status, entry_key, attempts,
+       coalesce(running_since > now() - cast(:running as interval), false) as running,
+       coalesce(last_attempt_at > now() - cast(:cool_down as interval), false) as cooling
+from misses
 where tenant_id = :tenant and language = :language and query_norm = :q
 """)
+
+# The lookup that starts a job claims the miss. Two lookups at once: the second waits on the
+# row, sees the first one's claim, and starts nothing.
+CLAIM = text("""
+update misses set running_since = now()
+where tenant_id = :tenant and language = :language and query_norm = :q
+  and status = 'pending' and attempts < :max_attempts
+  and (running_since is null or running_since <= now() - cast(:running as interval))
+  and (last_attempt_at is null or last_attempt_at <= now() - cast(:cool_down as interval))
+returning 1
+""")
+TIMING = {"running": RUNNING, "cool_down": COOL_DOWN, "max_attempts": MAX_ATTEMPTS}
 
 STUDENT = text("""
 with added as (
@@ -217,11 +248,16 @@ async def on_miss(
     if not {row[0] for row in await conn.execute(KNOWN, params)}.issuperset(words):
         return ProvisionalStatus(status="invalid"), None
     params = {"tenant": principal.tenant, "language": language, "q": q}
-    miss = (await conn.execute(MISS, params)).first()
+    miss = (await conn.execute(MISS, params | TIMING)).first()
     if miss is not None and miss.status != "pending":
         return ProvisionalStatus(status=MISS_STATUS[miss.status], entry_key=miss.entry_key), None
     if not gateway.configured:
         return ProvisionalStatus(status="unavailable"), None
+    generating = ProvisionalStatus(status="generating", retry_after_ms=RETRY_AFTER_MS)
+    if miss is not None and miss.running:
+        return generating, None  # a job is at work: no second one
+    if miss is not None and (miss.cooling or miss.attempts >= MAX_ATTEMPTS):
+        return ProvisionalStatus(status="unavailable"), None  # it failed; not again yet
     user_id = None
     if principal.subject:
         student = {"tenant": principal.tenant, "subject": principal.subject}
@@ -230,9 +266,11 @@ async def on_miss(
         if used >= QUOTA_PER_DAY:
             return ProvisionalStatus(status="quota_exceeded"), None
     await conn.execute(ADD_MISS, params)
+    if (await conn.execute(CLAIM, params | TIMING)).first() is None:
+        return generating, None  # another lookup claimed it a moment ago
     job = Job(query=q, tenant=principal.tenant, user_id=user_id, language=language,
               typed=query.raw, variety=query.variety)  # fmt: skip
-    return ProvisionalStatus(status="generating", retry_after_ms=RETRY_AFTER_MS), job
+    return generating, job
 
 
 async def searched_in(conn: AsyncConnection, query: Query) -> Language | None:
@@ -254,9 +292,17 @@ async def searched_in(conn: AsyncConnection, query: Query) -> Language | None:
 # 2-4. The work, after the response ----------------------------------------------------------
 
 
+class NoEntry(Exception):
+    """The job ends without an entry. `word` is the English word it was writing, if known."""
+
+    def __init__(self, reason: str, word: str | None = None) -> None:
+        super().__init__(reason)
+        self.word = word
+
+
 def generate(job: Job, gateway: Gateway) -> None:
-    """Runs in a worker thread once the lookup has answered. A failure only leaves the miss
-    pending, so a later lookup tries again; it never reaches the student."""
+    """Runs in a worker thread once the lookup has answered. Every end settles the miss or
+    records a failed attempt, and clears the job's claim; nothing reaches the student."""
     try:
         with connect() as conn:
             # Held until the connection closes, so one request handles the query at a time.
@@ -264,20 +310,27 @@ def generate(job: Job, gateway: Gateway) -> None:
             locked = conn.execute("select pg_try_advisory_lock(hashtextextended(%s, 0))",
                                   (lock,)).fetchone()  # fmt: skip
             conn.commit()
-            if not (locked and locked[0]) or not _pending(conn, job):
-                return  # being handled, or settled while this job waited
-            if job.language == "es":
-                _spanish(conn, job, gateway)
-            else:
-                _english(conn, job, gateway)
-    except Exception:
+            if not (locked and locked[0]):
+                return  # another job holds the word; its end clears the claim
+            if not _pending(conn, job):
+                return  # settled while this job waited
+            try:
+                if job.language == "es":
+                    _spanish(conn, job, gateway)
+                else:
+                    _english(conn, job, gateway)
+            except NoEntry as failure:
+                conn.rollback()
+                log.warning("no provisional entry for %r: %s", job.query, failure)
+                _fail(conn, job, str(failure), failure.word)
+                conn.commit()
+    except Exception as error:
         log.exception("the provisional entry for %r failed", job.query)
+        _fail_alone(job, f"error: {type(error).__name__}: {error}"[:300])
 
 
 def _english(conn: psycopg.Connection, job: Job, gateway: Gateway) -> None:
     answer = _ask(conn, gateway, PROVISIONAL, _facts(conn, job.query), job, job.query)
-    if answer is None:
-        return
     if answer.value.verdict != "entry":
         _settle(conn, job, "invalid", None)
         gateway.remember(conn, PROVISIONAL, job.query, answer)
@@ -290,8 +343,6 @@ def _spanish(conn: psycopg.Connection, job: Job, gateway: Gateway) -> None:
     question = f"Spanish query: {job.typed or job.query}\nThe student's Spanish: {job.variety}"
     translated_key = f"{job.variety}:{job.query}"
     translation = _ask(conn, gateway, TRANSLATE, question, job, translated_key)
-    if translation is None:
-        return
     gateway.remember(conn, TRANSLATE, translated_key, translation)
     best = _best(translation.value)
     if best is None:
@@ -310,11 +361,8 @@ def _spanish(conn: psycopg.Connection, job: Job, gateway: Gateway) -> None:
     drafted_key = f"{word}\nfor es:{job.query}"
     facts = _facts(conn, word, spanish=job.typed or job.query, pos=headword.pos)
     draft = _ask(conn, gateway, PROVISIONAL, facts, job, drafted_key)
-    if draft is None:
-        return
     if draft.value.verdict != "entry":
-        log.warning("%r was translated as %r, which the draft turned down", job.query, word)
-        return
+        raise NoEntry(f"translated as {word!r}, which the draft turned down", word)
     _with_equivalent(draft.value, job)
     _check_and_publish(conn, job, gateway, draft, word, drafted_key)
 
@@ -348,16 +396,15 @@ def _ask[T: BaseModel](
     question: str,
     job: Job,
     cache_key: str,
-) -> Answer[T] | None:
+) -> Answer[T]:
     """The task's answer, with the student's search as the call's ref_key (the quota counts
-    searches). None when no provider answered; the logged attempts are committed either way."""
+    searches). The logged calls are committed either way."""
     try:
         answer = gateway.run(conn, task, question, cache_key=cache_key, tenant=job.tenant,
                              user_id=job.user_id, ref_key=job.query)  # fmt: skip
     except Unavailable:
         conn.commit()
-        log.warning("no AI provider answered %s for %r", task.name, job.query)
-        return None
+        raise NoEntry(f"no AI provider answered {task.name}") from None
     conn.commit()
     return answer
 
@@ -372,19 +419,16 @@ def _check_and_publish(
 ) -> None:
     raw = _document(conn, answer.value)
     if raw is None:
-        log.warning("the draft for %r can't make an entry: %s", word, answer.value)
-        return
+        raise NoEntry(f"the draft can't make an entry: {answer.value}"[:300], word)
     entry = Entry(key=raw["key"], lemma=raw["lemma"], pos=raw["pos"], kind=raw["kind"])
     issues = validate(entry, raw, Context.load(conn, [entry], [raw]), provisional=True)
     errors = [issue for issue in issues if issue.severity == "error"]
     if errors:
-        log.warning("the draft for %r failed its checks: %s", word,
-                    "; ".join(f"{i.check} {i.where}: {i.message}" for i in errors))  # fmt: skip
-        return
+        found = "; ".join(f"{i.check} {i.where}: {i.message}" for i in errors)
+        raise NoEntry(f"the draft failed its checks: {found}"[:300], word)
     doc = EntryDoc.model_validate(raw)
     if word not in english_forms(doc):
-        log.warning("the draft for %r is about %r instead", word, doc.lemma)
-        return
+        raise NoEntry(f"the draft is about {doc.lemma!r} instead", word)
     current = conn.execute(
         "select status::text from entries where key = %s for update", (doc.key,)
     ).fetchone()
@@ -419,10 +463,63 @@ def _pending(conn: psycopg.Connection, job: Job) -> bool:
 
 def _settle(conn: psycopg.Connection, job: Job, status: str, key: str | None) -> None:
     conn.execute(
-        "update misses set status = %s, entry_key = %s"
+        "update misses set status = %s, entry_key = %s, running_since = null"
         " where tenant_id = %s and language = %s and query_norm = %s",
         (status, key, job.tenant, job.language, job.query),
     )
+
+
+def _fail(conn: psycopg.Connection, job: Job, reason: str, word: str | None) -> None:
+    """Count a failed attempt and clear the claim; after the last one, hand the word over."""
+    row = conn.execute(
+        "update misses set attempts = attempts + 1, last_attempt_at = now(),"
+        " last_error = %s, running_since = null"
+        " where tenant_id = %s and language = %s and query_norm = %s returning attempts",
+        (reason, job.tenant, job.language, job.query),
+    ).fetchone()
+    if row is not None and row[0] >= MAX_ATTEMPTS:
+        english = word or (job.query if job.language == "en" else None)
+        if english:
+            _to_the_factory(conn, job, english)
+
+
+def _fail_alone(job: Job, reason: str) -> None:
+    """Record a failure after an error, on a fresh connection: the job's may be broken."""
+    try:
+        with connect() as conn:
+            _fail(conn, job, reason, None)
+    except Exception:
+        log.exception("couldn't record the failure for %r", job.query)
+
+
+def _to_the_factory(conn: psycopg.Connection, job: Job, word: str) -> None:
+    """The word failed every attempt, so the routine writes it next. Its entry (queued from
+    its seed candidates if it has none yet) moves to the front of the queue, and the miss points
+    to it: lookups answer "queued". A word with no seed candidate stays "unavailable", and
+    `factory status` lists it."""
+    lemmas = sorted({word, *(lemma for found in getAllLemmas(word).values() for lemma in found)})
+    current = _entry_for(conn, lemmas)
+    if current is None:
+        queue(conn, lemmas=lemmas)  # commits as it goes
+        current = _entry_for(conn, lemmas)
+    if current is None:
+        return
+    key, status = current
+    conn.execute(
+        "update entries set priority = greatest(priority, %s) where key = %s"
+        " and status in ('candidate', 'queued', 'needs_repair')",
+        (ASKED_PRIORITY, key),
+    )
+    _settle(conn, job, HELD.get(status, "queued"), key)
+
+
+def _entry_for(conn: psycopg.Connection, lemmas: list[str]) -> tuple[str, str] | None:
+    row = conn.execute(
+        "select key, status::text from entries where language = 'en'"
+        " and lemma_norm = any(%s) and status <> 'retired' order by priority desc, key limit 1",
+        (lemmas,),
+    ).fetchone()
+    return (row[0], row[1]) if row else None
 
 
 def _facts(

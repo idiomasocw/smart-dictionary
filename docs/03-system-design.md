@@ -606,10 +606,10 @@ Caddy accepts `bbb` traffic only from the BBB server's IP. Factory and admin rou
 |---|---|---|
 | `generating` | AI is writing a provisional entry, or finding the English word for a Spanish search | Shows that it's working, and asks the same lookup again after `retry_after_ms`, for up to about 10 s. The entry then arrives as an ordinary item with `"provisional": true`, shown as *Beta*; for a Spanish search, on the `l1` side |
 | `ready` | An entry exists under `entry_key`, though the query doesn't reach it: for example a Spanish search whose English word was already in the dictionary | Opens `entry_key` |
-| `queued` | The routine is writing this word, under `entry_key` | Says the word is coming soon |
+| `queued` | The routine is writing this word, under `entry_key`; or AI failed it three times and it's next in the factory's queue | Says the word is coming soon |
 | `invalid` | Nothing to generate: a word the search's language doesn't know, a misspelling, a name, blocked, or over 4 words | "Not found", with `did_you_mean` |
 | `quota_exceeded` | The student sent 10 missed searches to AI today | Asks them to try again tomorrow |
-| `unavailable` | AI isn't configured, or can't answer now | "Not found yet" |
+| `unavailable` | AI isn't configured, or its last attempt at this word failed (it tries again 10 minutes later, 3 times at most) | "Not found yet" |
 
 ### 5.4 Conventions
 
@@ -807,7 +807,13 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
 - **Checks:** all of V1–V11, with V11's counts for a short entry (1–2 senses, at least one example). Errors block; warnings lower `quality`. The query must be one of the draft's forms (*kettles* → *kettle*), so a model that drifts to another word publishes nothing.
 - **The model can turn a query down:** not English, a misspelling, a proper noun or a slur. The miss is then settled as `invalid`, and later lookups answer at once without a call.
 - **It never replaces the routine's work.** A word being written or already published keeps its document, and the miss points to it (`queued`, `ready`). A `queued` word nobody has written yet is taken over, keeping its queue priority. Provisional entries are leased first whatever their priority (`QUEUE_ORDER`).
-- **A failed generation** (no provider answered, or the draft failed its checks) leaves the miss `pending`, so the next lookup tries again. The quota and the budget bound the retries.
+- **One job at a time:** the lookup that starts a job claims the miss (`misses.running_since`), so other lookups answer `generating` without starting another, however often the plugin asks. A claim older than 3 minutes expires, so a crashed job can't hold a word.
+- **A failed generation** counts an attempt on the miss (`attempts`, `last_attempt_at`, `last_error`; revision 0010):
+  - **What counts:** no provider answered; a draft that can't make an entry, fails its checks, is about another word, or turns the word down; or any error.
+  - **For 10 minutes after each failure,** lookups answer `unavailable` at once, with no AI call. After that, one lookup starts one new attempt.
+  - **After 3 failed attempts,** the word goes to the factory. Its entry, queued from its seed candidates if it has none yet, moves to the front of the queue, and lookups answer `queued` with its key.
+  - **A word no seed candidate covers** stays `unavailable`, and `smart-dictionary factory status` lists it for the owner.
+  - Cool-down, attempts and hand-off are the owner's choices (2026-10-20).
 - **Searches in Spanish** take their own path [LK-5, LK-6], so they work before the routine has written their words:
   - **Routing:** a miss is Spanish when it was searched in Spanish (`dir=l1`), or with `dir=auto` when every word is known in Spanish and at least as common there as in English (`ref_freq`). Everything else takes the English path, so a Spanish word no longer spends a `provisional_entry` call that answers "not English". Other student languages have no path yet.
   - **The gate is the English one,** in Spanish: every word known in Spanish (`ref_freq` or `ref_forms`), none blocked, the same quota and lock. The miss is a `misses` row with language `es`.

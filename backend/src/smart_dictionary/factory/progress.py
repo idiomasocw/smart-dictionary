@@ -7,6 +7,7 @@ from datetime import datetime
 
 import psycopg
 
+from smart_dictionary.ai.provisional import MAX_ATTEMPTS
 from smart_dictionary.factory.lease import LEASE
 
 # The order a reader wants: done first, then what's waiting, then what needs a person.
@@ -61,6 +62,17 @@ def report(conn: psycopg.Connection, runs: int = 10) -> list[str]:
             + (f"  ({outcomes})" if outcomes else "")
             + (f"  {label}" if label else "")
         )
+
+    # Missed searches whose AI attempts all failed, and that the factory couldn't take: no
+    # seed candidate names the word. Students see "unavailable" until someone queues it.
+    stuck = conn.execute(
+        "select language, query_norm, last_error from misses"
+        " where status = 'pending' and attempts >= %s order by last_attempt_at desc",
+        (MAX_ATTEMPTS,),
+    ).fetchall()
+    if stuck:
+        lines += ["", f"Searches AI couldn't write and no seed covers ({len(stuck)}):"]
+        lines += [f"  {query} ({language}): {error}" for language, query, error in stuck[:20]]
     return lines
 
 

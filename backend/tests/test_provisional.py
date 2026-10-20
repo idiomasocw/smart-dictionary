@@ -6,13 +6,15 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any, LiteralString
 
+import pytest
 from fastapi.testclient import TestClient
 
 from factory_docs import world
 from smart_dictionary.ai.gateway import Gateway, get_gateway
-from smart_dictionary.ai.providers import Reply
+from smart_dictionary.ai.providers import ProviderError, Reply
 from smart_dictionary.api.app import create_app
 from smart_dictionary.db.sync import connect
+from smart_dictionary.factory import progress
 
 STUDENT = {"x-bbb-ext-user": "person-1"}
 
@@ -35,6 +37,14 @@ KETTLE: dict[str, Any] = {
 }
 NOT_A_WORD = {"verdict": "not_a_word", "lemma": None, "pos": None, "kind": None, "senses": []}
 TETERA = {"verdict": "found", "headwords": [{"lemma": "kettle", "pos": "noun", "kind": "word"}]}
+# Drafts that can't publish, one per way of failing.
+FAILS_CHECKS = copy.deepcopy(KETTLE)
+FAILS_CHECKS["senses"][0]["example"] = "Diego boiled some water to make a cup of tea."  # no kettle
+NO_KEY = {**KETTLE, "pos": "phrase"}  # a single word can't be a phrase: no key
+ANOTHER_WORD = copy.deepcopy(KETTLE)
+ANOTHER_WORD["lemma"] = "pot"
+ANOTHER_WORD["senses"][0]["definition"] = "a deep round container used for cooking food"
+ANOTHER_WORD["senses"][0]["example"] = "Diego put the pot on the stove to boil some water."
 
 
 @dataclass
@@ -61,6 +71,42 @@ class Model:
         answer = self.translation if translating else self.draft
         assert answer is not None
         return Reply(copy.deepcopy(answer), self.model, 900, 300)
+
+
+class Broken(Model):
+    """A provider that crashes in a way the gateway doesn't expect."""
+
+    def complete(self, system: str, user: str, schema: dict[str, Any], max_tokens: int) -> Reply:
+        self.asked.append("crash")
+        raise RuntimeError("the model broke")
+
+
+@dataclass
+class Down:
+    """A provider that never answers in time."""
+
+    name: str = "anthropic"
+    model: str = "claude-haiku-5-5"
+    paid: bool = True
+    calls: int = 0
+
+    def complete(self, system: str, user: str, schema: dict[str, Any], max_tokens: int) -> Reply:
+        self.calls += 1
+        raise ProviderError("timeout", "no answer in 8s")
+
+
+def cool_down_over() -> None:
+    """Move the last attempt back past the cool-down, instead of waiting."""
+    with connect() as conn:
+        conn.execute("update misses set last_attempt_at = now() - interval '11 minutes'")
+
+
+def miss(query: str) -> Any:
+    return row(
+        "select status, attempts, running_since is not null, last_error, entry_key from misses"
+        " where query_norm = %s",
+        query,
+    )
 
 
 def kettle_world() -> None:
@@ -187,16 +233,139 @@ def test_a_draft_that_fails_the_checks_is_not_published(
     migrated_database_url, anyio_backend_options
 ):
     kettle_world()
-    draft = copy.deepcopy(KETTLE)
-    draft["senses"][0]["example"] = "Diego boiled some water to make a cup of tea."  # no kettle
-    model = Model(draft)
+    model = Model(FAILS_CHECKS)
     with client(anyio_backend_options, Gateway([model], 5.0)) as api:
         assert lookup(api, "kettles")["provisional"]["status"] == "generating"
-        # Nothing was published or cached, so the next lookup tries again.
-        assert lookup(api, "kettles")["provisional"]["status"] == "generating"
-    assert model.calls == 2
+        # The attempt failed: "unavailable" until the cool-down ends, with no new call.
+        assert lookup(api, "kettles")["provisional"]["status"] == "unavailable"
+    assert model.calls == 1
     assert row("select count(*) from entries where key = 'en:kettle:n'") == (0,)
-    assert row("select status from misses where query_norm = 'kettles'") == ("pending",)
+    status, attempts, running, error, _ = miss("kettles")
+    assert (status, attempts, running) == ("pending", 1, False)
+    assert error.startswith("the draft failed its checks: V3")
+
+
+@pytest.mark.parametrize(
+    ("provider", "query", "calls", "reason"),
+    [
+        (Down(), "kettles", 1, "no AI provider answered provisional_entry"),
+        (Model(FAILS_CHECKS), "kettles", 1, "the draft failed its checks"),
+        (Model(NO_KEY), "kettles", 1, "the draft can't make an entry"),
+        (Model(ANOTHER_WORD), "kettles", 1, "the draft is about 'pot' instead"),
+        (Broken(KETTLE), "kettles", 1, "error: RuntimeError: the model broke"),
+        (Down(), "tetera", 1, "no AI provider answered translate_query"),
+        (Model(NOT_A_WORD, TETERA), "tetera", 2, "which the draft turned down"),
+        (Broken(KETTLE, TETERA), "tetera", 1, "error: RuntimeError: the model broke"),
+    ],
+    ids=["no-provider", "checks", "no-key", "another-word", "error",
+         "es-no-provider", "es-turned-down", "es-error"],
+)  # fmt: skip
+def test_every_failure_answers_unavailable_through_the_plugins_polling(
+    provider, query, calls, reason, migrated_database_url, anyio_backend_options
+):
+    kettle_world()
+    with client(anyio_backend_options, Gateway([provider], 5.0)) as api:
+        assert lookup(api, query)["provisional"]["status"] == "generating"
+        # The plugin asks about 21 times in 30 s: after the failure, each answer comes at once
+        # and starts nothing.
+        for _ in range(20):
+            assert lookup(api, query)["provisional"] == {
+                "status": "unavailable", "entry_key": None, "retry_after_ms": None,
+            }  # fmt: skip
+    assert provider.calls == calls  # one attempt
+    status, attempts, running, error, _ = miss(query)
+    assert (status, attempts, running) == ("pending", 1, False)
+    assert reason in error
+
+
+def test_after_the_cool_down_one_new_attempt_and_after_three_the_factory(
+    migrated_database_url, anyio_backend_options
+):
+    kettle_world()
+    with connect() as conn:  # the owner queued the word; nobody has written it yet
+        conn.execute(
+            "insert into entries (key, language, lemma, lemma_norm, pos, kind, status, priority)"
+            " values ('en:kettle:n', 'en', 'kettle', 'kettle', 'noun', 'word', 'queued', 7)"
+        )
+    model = Model(FAILS_CHECKS)
+    with client(anyio_backend_options, Gateway([model], 5.0)) as api:
+        for attempt in (1, 2, 3):
+            assert lookup(api, "kettles")["provisional"]["status"] == "generating"
+            assert model.calls == attempt  # exactly one new attempt per cool-down
+            if attempt < 3:
+                assert lookup(api, "kettles")["provisional"]["status"] == "unavailable"
+                assert model.calls == attempt
+                cool_down_over()
+        # The third failure handed the word to the factory, first in its queue.
+        queued = {"status": "queued", "entry_key": "en:kettle:n", "retry_after_ms": None}
+        assert lookup(api, "kettles")["provisional"] == queued
+        cool_down_over()
+        assert lookup(api, "kettles")["provisional"] == queued
+    assert model.calls == 3
+    assert row("select status::text, priority from entries where key = 'en:kettle:n'") == (
+        "queued", 100_000,
+    )  # fmt: skip
+
+
+def test_a_failing_word_is_queued_from_its_seed_candidate(
+    migrated_database_url, anyio_backend_options
+):
+    kettle_world()
+    with connect() as conn:  # "realize" is a seed candidate with no entry yet
+        conn.execute("insert into ref_freq (dataset_id, language, word, zipf)"
+                     " values ('t-freq', 'en', 'realize', 4.8)")  # fmt: skip
+    down = Down()
+    with client(anyio_backend_options, Gateway([down], 5.0)) as api:
+        for _ in range(3):
+            assert lookup(api, "realize")["provisional"]["status"] == "generating"
+            cool_down_over()
+        assert lookup(api, "realize")["provisional"] == {
+            "status": "queued", "entry_key": "en:realize:v", "retry_after_ms": None,
+        }  # fmt: skip
+    assert down.calls == 3
+    assert row("select status::text, priority from entries where key = 'en:realize:v'") == (
+        "queued", 100_000,
+    )  # fmt: skip
+
+
+def test_a_word_the_factory_cannot_take_stays_unavailable_and_listed(
+    migrated_database_url, anyio_backend_options
+):
+    kettle_world()  # no seed candidate for "kettle"
+    down = Down()
+    with client(anyio_backend_options, Gateway([down], 5.0)) as api:
+        for _ in range(3):
+            assert lookup(api, "kettles")["provisional"]["status"] == "generating"
+            cool_down_over()
+        # No more automatic attempts, however long the student waits.
+        assert lookup(api, "kettles")["provisional"]["status"] == "unavailable"
+    assert down.calls == 3
+    assert miss("kettles")[:3] == ("pending", 3, False)
+    with connect() as conn:
+        lines = progress.report(conn)
+    assert any("kettles" in line and "no AI provider answered" in line for line in lines)
+
+
+def test_a_running_job_starts_no_second_one_and_its_claim_expires(
+    migrated_database_url, anyio_backend_options
+):
+    kettle_world()
+    with connect() as conn:  # a job claimed the word a moment ago and is still at work
+        conn.execute(
+            "insert into misses (tenant_id, language, query_norm, hits, running_since)"
+            " values ('ocw', 'en', 'kettles', 0, now())"
+        )
+    model = Model(KETTLE)
+    with client(anyio_backend_options, Gateway([model], 5.0)) as api:
+        for _ in range(21):
+            assert lookup(api, "kettles")["provisional"]["status"] == "generating"
+        assert model.calls == 0
+        # The job never finished (a crash): its claim expires, and the next lookup tries.
+        with connect() as conn:
+            conn.execute("update misses set running_since = now() - interval '4 minutes'")
+        assert lookup(api, "kettles")["provisional"]["status"] == "generating"
+        assert lookup(api, "kettles")["groups"]
+    assert model.calls == 1
 
 
 def test_the_factorys_entries_are_never_replaced(migrated_database_url, anyio_backend_options):
@@ -289,11 +458,15 @@ def test_one_job_per_query_at_a_time(migrated_database_url, anyio_backend_option
     model = Model(KETTLE, TETERA)
     lock = "select pg_advisory_lock(hashtextextended('provisional:ocw:es:tetera', 0))"
     with connect() as holder:
-        # Another request is handling "tetera": this one's job leaves it alone.
+        # Another request is handling "tetera": this one's job leaves it alone, and its claim
+        # stands, so the next lookups start no job either.
         holder.execute(lock)
         with client(anyio_backend_options, Gateway([model], 5.0)) as api:
             assert lookup(api, "tetera")["provisional"]["status"] == "generating"
+            assert lookup(api, "tetera")["provisional"]["status"] == "generating"
         assert model.calls == 0
+    with connect() as conn:  # the other request never finished: the claim expires
+        conn.execute("update misses set running_since = now() - interval '4 minutes'")
     with client(anyio_backend_options, Gateway([model], 5.0)) as api:
         assert lookup(api, "tetera")["provisional"]["status"] == "generating"
     assert model.asked == ["translate_query", "provisional_entry"]
