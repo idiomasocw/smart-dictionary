@@ -108,6 +108,20 @@ TUNABLES: dict[str, Tunable] = {
             " waits for you.",
         ),
         Tunable(
+            "auto_approve_related",
+            "boolean",
+            "Approve, as chosen by AI, a word an entry you chose links to when no list names"
+            " it, if it's a real and common word with a clear part of speech. You confirm or"
+            " retire it later. Off: it waits for you.",
+        ),
+        Tunable(
+            "audit_auto_repair",
+            "boolean",
+            "Send an entry to repair at once when the audit is highly confident about a fix to"
+            " its content; the factory rewrites it with every check. Other findings always wait"
+            " for you. Off: every finding waits for you.",
+        ),
+        Tunable(
             "factory_publish_threshold",
             "number",
             "The quality score a factory entry needs to publish.",

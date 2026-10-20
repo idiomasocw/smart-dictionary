@@ -1,18 +1,20 @@
 """Related entries (design §3.5, §6.7): a card links only to entries students can open, and a
-link to a word the dictionary lacks becomes a suggestion for the owner.
+link to a word the dictionary lacks becomes a suggestion, approved at once when it passes the
+owner's rules.
 
 The routine links by key, and a link may name an entry that doesn't exist yet (factory/STYLE.md
 §13) or that exists under another key: *by the way* is seeded as an idiom, so a link to
-`en:by_the_way:phr` means that entry.
+`en:by_the_way:phr` means that entry, and *colour* is *color*'s UK spelling.
 - **Cards** show a link when an entry students see stands for it: the key itself, else its
   word under the same part of speech (another homograph: `en:tv:n` opens `en:tv:n~2`), else,
-  for a multiword expression, its entry of any kind, with or without the article. Other
-  links stay in the document, hidden, until their entry is shown.
+  for a multiword expression, its entry of any kind, with or without the article, else the
+  entry that lists it as a spelling variant. Other links stay in the document, hidden, until
+  their entry is shown.
 - **Publishing** turns each link to a word with no entry at all (retired ones count: the owner
-  decided) into a word request of origin `related`, with the link as its evidence. Typos,
-  blocked words and words the owner declined are skipped, as for students' requests. The
-  auto-approval may approve it at once (word_requests.auto_approve); it then waits in its
-  natural place in the queue, since no student is waiting.
+  decided) into a word request of origin `related`, with the link as its evidence. Spelling
+  variants, typos, blocked words and words the owner declined are skipped, as for students'
+  requests. word_requests.auto_approve may approve it at once, by the lists' rule or as
+  chosen by AI; it then waits in its natural place in the queue, since no student is waiting.
 """
 
 import logging
@@ -26,18 +28,10 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from smart_dictionary.content import word_requests
 from smart_dictionary.content.visibility import live
-from smart_dictionary.core.entrydoc import KIND_POS
 from smart_dictionary.core.ids import new_id
-from smart_dictionary.core.keys import KIND_CODES, POS_CODES, parse_key
 from smart_dictionary.core.text import norm
 
 log = logging.getLogger(__name__)
-
-# Each key code's part of speech and kind.
-CODE_PARTS = {
-    **{code: (pos, "word") for pos, code in POS_CODES.items()},
-    **{code: (KIND_POS[kind], kind) for kind, code in KIND_CODES.items()},
-}
 
 
 @dataclass(frozen=True)
@@ -59,29 +53,38 @@ class Link:
 
 def link(key: str) -> Link | None:
     """What an English entry key names; None for anything else."""
-    try:
-        parsed = parse_key(key)
-    except ValueError:
+    parts = word_requests.link_hint(key)
+    if parts is None:
         return None
-    if parsed.level != "entry" or parsed.language != "en":
-        return None
-    pos, kind = CODE_PARTS[parsed.code]
-    return Link(key, norm(parsed.slug.replace("_", " ")), pos, kind)
+    slug = key.split(":")[1]
+    return Link(key, norm(slug.replace("_", " ")), *parts)
 
 
 # 1. Cards -------------------------------------------------------------------------------------
 
+# Each link's entry, best first: its key, a homograph, the expression's entry, then the entry
+# that lists it as a spelling variant under the same part of speech.
 OPENS = text(f"""
 select r.key, (
-  select e.key from entries e
-  where e.language = 'en' and {live()}
-    and (e.key = r.key
-         or (e.lemma_norm = r.lemma and split_part(e.key, '~', 1) = r.base)
-         or (r.multiword and expression_of(e.lemma_norm) = expression_of(r.lemma)))
-  order by e.key = r.key desc, split_part(e.key, '~', 1) = r.base desc, e.priority desc, e.key
+  select found.key from (
+    select e.key, e.priority, 0 as rank from entries e where e.key = r.key and {live()}
+    union all
+    select e.key, e.priority, 1 from entries e
+    where e.language = 'en' and e.lemma_norm = r.lemma and split_part(e.key, '~', 1) = r.base
+      and {live()}
+    union all
+    select e.key, e.priority, 2 from entries e
+    where r.multiword and e.language = 'en'
+      and expression_of(e.lemma_norm) = expression_of(r.lemma) and {live()}
+    union all
+    select e.key, e.priority, 3 from entry_forms f join entries e on e.id = f.entry_id
+    where f.form_norm = r.lemma and f.source = 'variant' and e.pos = r.pos and {live()}
+  ) as found
+  order by found.rank, found.priority desc, found.key
   limit 1)
 from unnest(cast(:keys as text[]), cast(:lemmas as text[]), cast(:bases as text[]),
-            cast(:multiword as boolean[])) as r(key, lemma, base, multiword)
+            cast(:multiword as boolean[]), cast(:pos as text[]))
+  as r(key, lemma, base, multiword, pos)
 """)
 
 
@@ -95,6 +98,7 @@ async def opens(conn: AsyncConnection, doc: Mapping[str, Any]) -> dict[str, str]
         "lemmas": [found.lemma for found in links],
         "bases": [found.base for found in links],
         "multiword": [found.multiword for found in links],
+        "pos": [found.pos for found in links],
     }
     rows = await conn.execute(OPENS, params)
     return {key: opened for key, opened in rows if opened is not None}
@@ -108,14 +112,28 @@ select w from unnest(%s::text[]) as w
 where not exists (select from entries e
                   where e.language = 'en' and expression_of(e.lemma_norm) = expression_of(w))
 """
+# The headwords that are another word's spelling variant: listed in a written entry, in a
+# seed, or by Wiktionary as a variant of a word the dictionary has.
+VARIANTS = """
+select f.form_norm from entry_forms f
+where f.form_norm = any(%(words)s) and f.source = 'variant'
+union
+select lower(v->>'form') from seed_candidates c cross join jsonb_array_elements(c.variants) v
+where lower(v->>'form') = any(%(words)s) and coalesce(c.decision, 'accept') = 'accept'
+union
+select k.word_norm from ref_wiktionary k
+where k.word_norm = any(%(words)s) and cardinality(k.variant_of) > 0
+  and exists (select from entries e where e.language = 'en'
+              and e.lemma_norm = any(k.variant_of) and e.status <> 'retired')
+"""
 ADD = """
 insert into word_requests (id, lemma, lemma_norm, pos, kind, origin, students)
 values (%(id)s, %(lemma)s, %(lemma_norm)s, %(pos)s, %(kind)s::entry_kind, 'related', 0)
 on conflict (lemma_norm) do nothing
 """
 LINKED = """
-insert into word_request_links (request_id, entry_key, type)
-select id, %(entry)s, %(type)s from word_requests where lemma_norm = %(lemma)s
+insert into word_request_links (request_id, entry_key, type, target_key)
+select id, %(entry)s, %(type)s, %(target)s from word_requests where lemma_norm = %(lemma)s
   and status = 'pending'
 on conflict do nothing
 returning request_id
@@ -127,6 +145,7 @@ class Suggested:
     lemma: str
     request_id: Any
     approved: str | None  # the key, when approved at once
+    approved_by: str | None  # auto:lists or ai:related
 
 
 def suggest(
@@ -136,7 +155,7 @@ def suggest(
     tenant: str,
 ) -> list[Suggested]:
     """Turn the links of each (entry key, its `related`) to words the dictionary lacks into
-    requests, and approve each one the rule allows. The caller commits."""
+    requests, and approve each one a rule allows. The caller commits."""
     pending: list[tuple[str, str, Link]] = []
     for source, related in entries:
         for item in related:
@@ -145,9 +164,11 @@ def suggest(
                 pending.append((source, item["type"], found))
     if not pending:
         return []
-    missing = {
-        row[0] for row in conn.execute(MISSING, (sorted({found.lemma for _, _, found in pending}),))
-    }
+    lemmas = sorted({found.lemma for _, _, found in pending})
+    missing = {row[0] for row in conn.execute(MISSING, (lemmas,))}
+    if missing:
+        variants = {row[0] for row in conn.execute(VARIANTS, {"words": sorted(missing)})}
+        missing -= variants
     if not missing:
         return []
     rows = conn.execute(
@@ -166,12 +187,13 @@ def suggest(
         request = {"id": new_id(), "lemma": candidate.lemma, "lemma_norm": candidate.lemma_norm,
                    "pos": pos, "kind": kind}  # fmt: skip
         conn.execute(ADD, request)
-        added = conn.execute(LINKED, {"entry": source, "type": kind_of_link,
+        added = conn.execute(LINKED, {"entry": source, "type": kind_of_link, "target": found.key,
                                       "lemma": candidate.lemma_norm}).fetchone()  # fmt: skip
         if added is None or candidate.lemma_norm in suggested:
             continue  # decided already, or this link was known
-        approved = word_requests.auto_approve(conn, added[0], tenant=tenant, hint=hint)
+        approved = word_requests.auto_approve(conn, added[0], tenant=tenant)
         suggested[candidate.lemma_norm] = Suggested(
-            candidate.lemma, added[0], approved.key if approved else None
-        )
+            candidate.lemma, added[0], approved.key if approved else None,
+            approved.decided_by if approved else None,
+        )  # fmt: skip
     return list(suggested.values())

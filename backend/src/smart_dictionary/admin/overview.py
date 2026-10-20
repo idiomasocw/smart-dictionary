@@ -12,6 +12,7 @@ import psycopg
 
 from smart_dictionary.ai.provisional import AI_TASKS, MAX_ATTEMPTS
 from smart_dictionary.core.settings import AI_PROVIDERS, Settings
+from smart_dictionary.factory import audit as auditing
 from smart_dictionary.factory import progress
 
 # Every entry status, in the order a reader wants: done, at work, waiting, needing someone,
@@ -85,8 +86,14 @@ def stats(
             " count(*) from word_requests group by 1"
             " union all select 'auto_approved', count(*) from word_requests"
             " where status = 'approved' and decided_by = 'auto:lists'"
+            " union all select 'ai_chosen', count(*) from word_requests"
+            " where status = 'approved' and decided_by = 'ai:related'"
+            " union all select 'to_verify', count(*) from word_requests"
+            " where status = 'approved' and confirmed_at is null"
+            " and (left(decided_by, 5) = 'auto:' or left(decided_by, 3) = 'ai:')"
         ).fetchall()
     )
+    audit_stats = auditing.stats(conn)
     unapproved = _scalar(
         conn, "select count(*) from entries where approved_at is null and status <> 'retired'"
     )
@@ -115,9 +122,12 @@ def stats(
                 "pending_related",
                 "approved",
                 "auto_approved",
+                "ai_chosen",
+                "to_verify",
                 "rejected",
             )
         },
+        "audit": audit_stats,
         "misses": {
             "by_status": {status: misses.get(status, 0) for status in MISS_STATUSES},
             "stuck": stuck,

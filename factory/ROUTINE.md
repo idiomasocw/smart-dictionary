@@ -86,7 +86,7 @@ You write dictionary entries for the words in factory/work/groups/group-N.json. 
    - Copy key, lemma, pos, kind and variants from the pack unchanged, and write the rest following STYLE.md.
    - If the pack has "existing" (a document already published), keep every key it has.
    - If "existing" has "provisional": true, it's a short AI entry shown to students as Beta. Write a full entry over it: keep its keys, and set "provisional" to false.
-   - If it has "repair", fix exactly what that lists.
+   - If it has "repair", fix exactly what that lists. A repair from the audit lists each finding under "audit": where it is, the problem and the proposed fix.
    - If factory/work/out/group-N.json already holds entries (you were restarted), keep them and carry on with the packs that are missing.
 3. Save as you go. factory/work/out/group-N.json is one JSON list:
    [{"key": "<the pack's key>", "doc": {<the entry document>}}, ...]

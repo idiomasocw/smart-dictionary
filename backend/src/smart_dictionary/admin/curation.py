@@ -45,7 +45,7 @@ def add(
                                      decided_by=decided_by, note=note, tenant=tenant)  # fmt: skip
     word_requests.queue_approved(conn, key, lemma, pos, kind, approved_by=decided_by,
                                  sources=["owner:console"])  # fmt: skip
-    return word_requests.Approved(key, write_now=False)
+    return word_requests.Approved(key, write_now=False, decided_by=decided_by)
 
 
 def retire(conn: psycopg.Connection, key: str) -> str:

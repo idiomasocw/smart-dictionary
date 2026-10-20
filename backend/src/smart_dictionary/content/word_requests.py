@@ -12,9 +12,12 @@ searches for gets no entry; when it's a real headword, the student may request i
   any unapproved entry AI wrote for it before reviews existed (origin `ai_entry`).
 - **Related words** an entry links to that the dictionary lacks wait here too (origin
   `related`, content.related), with the links that named them.
-- **Approved at once** (auto_approve, the `auto_approve_listed` setting, on by default): a
-  student's request or a related word, when a curated list names it, the dictionary has no
-  entry for it and its part of speech is clear. Anything less clear waits for the owner.
+- **Approved at once** (auto_approve), when the dictionary has no entry for the word and its
+  part of speech is clear: by the lists' rule (`auto:lists`, the `auto_approve_listed`
+  setting) when a curated list or a seed names it; else as chosen by AI (`ai:related`,
+  `auto_approve_related`) when an entry the owner chose links to it and it's common enough.
+  Both are on by default, and the owner confirms or retires them later (confirm). Anything
+  less clear waits for the owner.
 - **One multiword expression, one entry:** approving or adding one is refused while an approved
   entry has the same expression under another kind, or with or without its leading article
   (`expression_of`, migration 0013). One headword of one kind under two parts of speech is
@@ -34,7 +37,7 @@ from smart_dictionary.content.visibility import live
 from smart_dictionary.core import tunables
 from smart_dictionary.core.entrydoc import KIND_POS
 from smart_dictionary.core.ids import new_id
-from smart_dictionary.core.keys import entry_key
+from smart_dictionary.core.keys import KIND_CODES, POS_CODES, entry_key, parse_key
 from smart_dictionary.core.principal import Principal
 from smart_dictionary.core.settings import get_settings
 from smart_dictionary.core.text import norm
@@ -43,6 +46,11 @@ from smart_dictionary.factory.validate import BLOCKED
 
 # Suggestions put the commonest parts of speech first.
 POS_ORDER = ["noun", "verb", "adjective", "adverb", "phrase"]
+# Each key code's part of speech and kind.
+CODE_PARTS = {
+    **{code: (pos, "word") for pos, code in POS_CODES.items()},
+    **{code: (KIND_POS[kind], kind) for kind, code in KIND_CODES.items()},
+}
 
 _REQUESTABLE = """
 select k.word, k.word_norm, k.pos, k.kind::text
@@ -195,6 +203,7 @@ class Conflict(Exception):
 class Approved:
     key: str
     write_now: bool  # a student waits and nobody has written it: AI may write its Beta at once
+    decided_by: str = ""
 
 
 # An entry for the same multiword expression under another kind, or with or without its
@@ -253,7 +262,8 @@ def approve(
         (request["lemma_norm"], key),
     )
     if existing is None:
-        queue_approved(conn, key, lemma, pos, kind, approved_by=decided_by, sources=["request"],
+        sources = ["related" if request["origin"] == "related" else "request"]
+        queue_approved(conn, key, lemma, pos, kind, approved_by=decided_by, sources=sources,
                        asked=asked)  # fmt: skip
     else:
         conn.execute(
@@ -277,7 +287,7 @@ def approve(
             " attempts = 0, running_since = null, last_attempt_at = null, last_error = null",
             (tenant, norm(lemma)),
         )
-    return Approved(key, write_now)
+    return Approved(key, write_now, decided_by)
 
 
 def queue_approved(
@@ -360,10 +370,15 @@ def reject(
 
 # Approved at once ---------------------------------------------------------------------------
 
-AUTO_BY = "auto:lists"
+LISTS_BY = "auto:lists"
+AI_BY = "ai:related"
+# A word chosen through a link must be this common on wordfreq's Zipf scale (3 is about once
+# per million words), every word of it for a multiword one, so links can't bring in rarities.
+MIN_LINKED_ZIPF = 3.0
 
 # What decides an approval at once: the lists that name the headword (and the parts of speech
-# the CEFR lists give it), its seeds, Wiktionary's parts of speech, and any entry it has.
+# the CEFR lists give it), its seeds, Wiktionary's parts of speech, any entry it has, how
+# common its rarest word is, and the links to it from entries the owner chose (not AI).
 EVIDENCE = """
 select array(select distinct l.dataset_id from ref_lists l
              where l.lemma_norm = %(lemma)s order by 1) as lists,
@@ -377,55 +392,104 @@ select array(select distinct l.dataset_id from ref_lists l
        array(select distinct k.pos || '/' || k.kind from ref_wiktionary k
              where k.word_norm = %(lemma)s) as wiktionary,
        exists (select from entries e where e.language = 'en'
-               and expression_of(e.lemma_norm) = expression_of(%(lemma)s)) as has_entry
+               and expression_of(e.lemma_norm) = expression_of(%(lemma)s)) as has_entry,
+       (select min(coalesce((select max(f.zipf) from ref_freq f
+                             where f.language = 'en' and f.word = w), 0))
+        from unnest(string_to_array(%(lemma)s, ' ')) as w)::float as rarest,
+       array(select l.entry_key || ' ' || l.type from word_request_links l
+             join entries e on e.key = l.entry_key
+             where l.request_id = %(id)s and e.approved_at is not null
+               and left(coalesce(e.approved_by, ''), 3) <> 'ai:'
+             order by l.created_at, l.entry_key) as owner_links,
+       array(select distinct l.target_key from word_request_links l
+             where l.request_id = %(id)s and l.target_key is not null) as targets
 """
 
 
-def auto_approve(
-    conn: psycopg.Connection,
-    request_id: Any,
-    *,
-    tenant: str,
-    hint: tuple[str, str] | None = None,
-) -> Approved | None:
-    """Approve a pending student or related request at once, as `auto:lists`, when the
-    owner's rule allows it (the `auto_approve_listed` setting): a curated list or a seed names
-    the headword, the dictionary has no entry for it (any part of speech, retired included),
-    and its part of speech and kind are clear. `hint` is the one a link gave it. None: it
-    waits for the owner. The caller commits; a refusal changes nothing."""
-    allowed = tunables.overrides(conn).get(
-        "auto_approve_listed", get_settings().auto_approve_listed
-    )
-    if not allowed:
-        return None
+def auto_approve(conn: psycopg.Connection, request_id: Any, *, tenant: str) -> Approved | None:
+    """Approve a pending student or related request at once when one of the owner's rules
+    allows it. Both need a word the dictionary has no entry for (any part of speech, retired
+    included) with a clear part of speech and kind; then:
+    - **the lists' rule** (`auto:lists`, setting `auto_approve_listed`): a curated list or a
+      seed names it;
+    - **chosen by AI** (`ai:related`, setting `auto_approve_related`): an entry the owner
+      chose links to it (an entry AI chose doesn't count, so links can't chain), and its
+      rarest word is at least MIN_LINKED_ZIPF.
+
+    None: it waits for the owner. The caller commits; a refusal changes nothing."""
     request = _locked(conn, request_id)
     if request["status"] != "pending" or request["origin"] == "ai_entry":
         return None
-    with conn.cursor(row_factory=dict_row) as cursor:
-        found = cursor.execute(EVIDENCE, {"lemma": request["lemma_norm"]}).fetchone()
-    if found is None or found["has_entry"] or not (found["lists"] or found["seeded"]):
-        return None
     if BLOCKED.intersection(request["lemma_norm"].split()):
         return None
-    clear = _clear_pos(found["seeds"], hint, found["list_pos"], found["wiktionary"])
+    with conn.cursor(row_factory=dict_row) as cursor:
+        found = cursor.execute(
+            EVIDENCE, {"lemma": request["lemma_norm"], "id": request["id"]}
+        ).fetchone()
+    if found is None or found["has_entry"]:
+        return None
+    hints = [hint for target in found["targets"] if (hint := link_hint(target))]
+    clear = _clear_pos(found["seeds"], hints, found["list_pos"], found["wiktionary"])
     if clear is None:
         return None
     pos, kind, why = clear
-    named = ", ".join(found["lists"]) or "the seed lists"
+    settings, overrides = get_settings(), tunables.overrides(conn)
+    if (found["lists"] or found["seeded"]) and overrides.get(
+        "auto_approve_listed", settings.auto_approve_listed
+    ):
+        named = ", ".join(found["lists"]) or "the seed lists"
+        decided_by, note = LISTS_BY, f"auto: on {named}; {pos}/{kind} {why}"
+    elif (
+        found["owner_links"]
+        and found["rarest"] >= MIN_LINKED_ZIPF
+        and overrides.get("auto_approve_related", settings.auto_approve_related)
+    ):
+        decided_by = AI_BY
+        note = (f"ai: linked from {found['owner_links'][0]}; {pos}/{kind} {why};"
+                f" Zipf {found['rarest']:.1f}")  # fmt: skip
+    else:
+        return None
     try:
         with conn.transaction():  # a savepoint: a refusal leaves the request as it was
             return approve(conn, request_id, lemma=request["lemma"], pos=pos, kind=kind,
-                           decided_by=AUTO_BY, note=f"auto: on {named}; {pos}/{kind} {why}",
-                           tenant=tenant, asked=request["students"] > 0)  # fmt: skip
+                           decided_by=decided_by, note=note, tenant=tenant,
+                           asked=request["students"] > 0)  # fmt: skip
     except (Conflict, ValueError):
         return None
 
 
+def confirm(conn: psycopg.Connection, request_ids: list[Any], *, decided_by: str) -> list[str]:
+    """The owner checked these words approved at once and keeps them; returns their
+    headwords. Others (pending, or decided by the owner) are left as they are."""
+    return [
+        row[0]
+        for row in conn.execute(
+            "update word_requests set confirmed_at = now(), confirmed_by = %s"
+            " where id = any(%s) and status = 'approved' and confirmed_at is null"
+            " and (left(decided_by, 5) = 'auto:' or left(decided_by, 3) = 'ai:')"
+            " returning lemma",
+            (decided_by, request_ids),
+        )
+    ]
+
+
+def link_hint(key: str) -> tuple[str, str] | None:
+    """The part of speech and kind an English entry key names: en:run_into:phrv → verb,
+    phrasal_verb."""
+    try:
+        parsed = parse_key(key)
+    except ValueError:
+        return None
+    if parsed.level != "entry" or parsed.language != "en":
+        return None
+    return CODE_PARTS[parsed.code]
+
+
 def _clear_pos(
-    seeds: list[str], hint: tuple[str, str] | None, list_pos: list[str], wiktionary: list[str]
+    seeds: list[str], hints: list[tuple[str, str]], list_pos: list[str], wiktionary: list[str]
 ) -> tuple[str, str, str] | None:
     """The part of speech and kind, with where they came from, when only one fits: the seed's,
-    else the link's when Wiktionary agrees, else Wiktionary's one option under the part of
+    else the links' when Wiktionary agrees, else Wiktionary's one option under the part of
     speech the CEFR lists give, else Wiktionary's only option."""
     seeded = {pair for seed in seeds if (pair := _pair(seed)) is not None}
     if len(seeded) == 1:
@@ -433,8 +497,10 @@ def _clear_pos(
         return pos, kind, "from its seed"
     options = [(option["pos"], option["kind"]) for option in _options(wiktionary)]
     options = [option for option in options if _forms_entry(*option)]
-    if hint is not None and hint in options:
-        return hint[0], hint[1], "from the link, as Wiktionary has it"
+    hinted = {hint for hint in hints if hint in options}
+    if len(hinted) == 1:
+        [(pos, kind)] = hinted
+        return pos, kind, "from the link, as Wiktionary has it"
     listed = [option for option in options if option[0] in list_pos]
     if len(listed) == 1:
         return listed[0][0], listed[0][1], "from the lists and Wiktionary"
@@ -465,16 +531,20 @@ def listing(
     page: int,
     per_page: int,
     request_id: Any = None,
+    to_verify: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
-    """One page of requests, the most asked first, with the evidence for each decision."""
-    params = {"status": status, "origin": origin, "q": q, "id": request_id}
+    """One page of requests, the most asked first, with the evidence for each decision.
+    `to_verify`: the words approved at once that the owner hasn't confirmed."""
+    params = {"status": status, "origin": origin, "q": q, "id": request_id,
+              "to_verify": to_verify}  # fmt: skip
     total = conn.execute("select count(*)" + LIST_FILTER, params).fetchone()
     with conn.cursor(row_factory=dict_row) as cursor:
         rows = cursor.execute(
             LIST_COLUMNS
             + LIST_FILTER
             + " order by r.status = 'pending' desc, r.students desc, searches desc,"
-            " r.last_asked_at desc limit %(limit)s offset %(offset)s",
+            " r.decided_at desc nulls last, r.last_asked_at desc"
+            " limit %(limit)s offset %(offset)s",
             params | {"limit": per_page, "offset": (page - 1) * per_page},
         ).fetchall()
     for row in rows:
@@ -488,10 +558,13 @@ where (cast(%(status)s as text) is null or r.status = %(status)s)
   and (cast(%(origin)s as text) is null or r.origin = %(origin)s)
   and (cast(%(q)s as text) is null or starts_with(r.lemma_norm, %(q)s))
   and (cast(%(id)s as uuid) is null or r.id = %(id)s)
+  and (not %(to_verify)s or (r.status = 'approved' and r.confirmed_at is null
+       and (left(r.decided_by, 5) = 'auto:' or left(r.decided_by, 3) = 'ai:')))
 """
 LIST_COLUMNS = f"""
 select r.id, r.lemma, r.pos, r.kind::text as kind, r.origin, r.status, r.entry_key, r.students,
-       r.first_asked_at, r.last_asked_at, r.decided_at, r.decided_by, r.note,
+       r.first_asked_at, r.last_asked_at, r.decided_at, r.decided_by, r.note, r.confirmed_at,
+       r.confirmed_by,
        (select coalesce(sum(m.hits), 0) from misses m
         where m.entry_key = r.entry_key
            or exists (select 1 from word_request_votes v where v.request_id = r.id
@@ -515,7 +588,10 @@ select r.id, r.lemma, r.pos, r.kind::text as kind, r.origin, r.status, r.entry_k
                and e.key is distinct from r.entry_key
              order by e.key) as twins,
        array(select l.entry_key || ' ' || l.type from word_request_links l
-             where l.request_id = r.id order by l.created_at, l.entry_key limit 10) as linked_from
+             where l.request_id = r.id order by l.created_at, l.entry_key limit 10) as linked_from,
+       (select e.audited_at from entries e where e.key = r.entry_key) as audited_at,
+       (select count(*) from audit_findings f
+        where f.entry_key = r.entry_key and f.status = 'open') as open_findings
 """
 
 

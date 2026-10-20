@@ -166,7 +166,7 @@ def _requests_sync(dry_run: bool) -> None:
             " and origin in ('student', 'related') order by lemma"
         ).fetchall()
         approved = [
-            (lemma, found.key)
+            (lemma, found.key, found.decided_by)
             for request_id, lemma in pending
             if (found := word_requests.auto_approve(conn, request_id, tenant=tenant))
         ]
@@ -174,13 +174,49 @@ def _requests_sync(dry_run: bool) -> None:
             conn.rollback()
         else:
             conn.commit()
-    approved += [(item.lemma, item.approved) for item in suggested if item.approved]
+    approved += [(item.lemma, item.approved, item.approved_by or "")
+                 for item in suggested if item.approved]  # fmt: skip
     would = "would be " if dry_run else ""
     print(f"{len(entries)} published entries have related links")
     print(f"{len(suggested)} new suggestions {would or 'were '}made from them")
-    for lemma, key in sorted(approved):
-        print(f"  approved at once: {lemma} -> {key}")
+    for lemma, key, by in sorted(approved):
+        print(f"  approved at once ({by}): {lemma} -> {key}")
     print(f"{len(approved)} {would}approved at once; the others wait for you in the console")
+
+
+def _seeds_curate(path: Path | None, dry_run: bool) -> None:
+    """Apply a curation file (seeds.curate) the owner reviewed; --dry-run changes nothing."""
+    from collections import Counter
+
+    from smart_dictionary.db.sync import connect
+    from smart_dictionary.seeds import curate
+
+    if path is None:
+        raise SystemExit("seeds curate needs --file <csv>")
+    try:
+        shape, rows = curate.read(path)
+    except curate.Invalid as error:
+        raise SystemExit(f"{path}: {error}") from None
+    with connect() as conn:
+        outcomes = curate.apply(conn, shape, rows, label=path.name)
+        left = curate.waiting(conn, shape, rows)
+        if dry_run:
+            conn.rollback()
+        else:
+            conn.commit()
+    for outcome in outcomes:
+        if outcome.changed or outcome.action.startswith("skipped"):
+            print(f"{outcome.target}: {outcome.action}")
+    counts = Counter(o.action.split(":")[0].split(" as ")[0] for o in outcomes)
+    print(", ".join(f"{name} {count}" for name, count in counts.most_common()))
+    if left:
+        what = "seeds" if shape == "seeds" else "multiword plain verbs"
+        print(f"{len(left)} {what} still wait for a decision, not in this file: "
+              + ", ".join(left[:20]) + (" …" if len(left) > 20 else ""))  # fmt: skip
+    if dry_run:
+        print("Dry run: nothing was changed.")
+    elif shape == "seeds":
+        print("Next: uv run smart-dictionary seeds queue --dry-run, then without --dry-run.")
 
 
 def _factory(action: str, name: str | None, runs: int) -> None:
@@ -294,9 +330,12 @@ def main(argv: list[str] | None = None) -> None:
     fixtures.add_argument("action", choices=["load"])
 
     seeds = commands.add_parser("seeds", help="seed candidates from the owner's and open lists")
-    seeds.add_argument("action", choices=["import", "export", "queue"])
+    seeds.add_argument("action", choices=["import", "export", "queue", "curate"])
     seeds.add_argument(
-        "--file", type=Path, help="seed CSV (default data/seeds/owner/owner-seeds.csv)"
+        "--file",
+        type=Path,
+        help="import: seed CSV (default data/seeds/owner/owner-seeds.csv); curate: the"
+        " curation file to apply (data/seeds/curation/)",
     )
     seeds.add_argument(
         "--out", type=Path, help="export path (default data/raw/seed-candidates.csv)"
@@ -307,7 +346,9 @@ def main(argv: list[str] | None = None) -> None:
         help="queue: only candidates listed at this level (repeatable)",
     )  # fmt: skip
     seeds.add_argument("--limit", type=int, help="queue: at most this many, by priority")
-    seeds.add_argument("--dry-run", action="store_true", help="queue: show, change nothing")
+    seeds.add_argument(
+        "--dry-run", action="store_true", help="queue and curate: show, change nothing"
+    )
 
     requests = commands.add_parser("requests", help="word requests (design §6.7)")
     requests.add_argument(
@@ -320,6 +361,10 @@ def main(argv: list[str] | None = None) -> None:
     factory.add_argument("action", choices=["status", "token", "revoke"])
     factory.add_argument("--name", help="token and revoke: a label such as 'routine'")
     factory.add_argument("--runs", type=int, default=10, help="status: how many recent runs")
+
+    audit = commands.add_parser("audit", help="tokens for the audit routine (design §6.6)")
+    audit.add_argument("action", choices=["token", "revoke"])
+    audit.add_argument("--name", required=True, help="a label such as 'audit'")
 
     admin = commands.add_parser("admin", help="tokens for the admin API (the LMS's console)")
     admin.add_argument("action", choices=["token", "revoke"])
@@ -348,6 +393,8 @@ def main(argv: list[str] | None = None) -> None:
         _fixtures_load()
     elif args.command == "seeds" and args.action == "queue":
         _seeds_queue(args.lemma, args.level, args.limit, args.dry_run)
+    elif args.command == "seeds" and args.action == "curate":
+        _seeds_curate(args.file, args.dry_run)
     elif args.command == "seeds":
         _seeds(args.action, args.file, args.out)
     elif args.command == "requests":
@@ -356,6 +403,8 @@ def main(argv: list[str] | None = None) -> None:
         _factory(args.action, args.name, args.runs)
     elif args.command == "admin":
         _token("admin", args.action, args.name)
+    elif args.command == "audit":
+        _token("audit", args.action, args.name)
     elif args.command == "db":
         _db_app_role(args.role)
     elif args.command == "audio":

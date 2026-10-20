@@ -50,6 +50,17 @@ def factory_client(
 FactoryClient = Annotated[tokens.Client, Depends(factory_client)]
 
 
+def audit_client(
+    conn: SyncConnection, authorization: Annotated[str | None, Header()] = None
+) -> tokens.Client:
+    """The audit routine, identified by a bearer token with the `audit` scope: it can lease
+    entries for an audit and submit findings, nothing else."""
+    return _bearer(conn, authorization, "audit")
+
+
+AuditClient = Annotated[tokens.Client, Depends(audit_client)]
+
+
 def admin_client(
     conn: SyncConnection, authorization: Annotated[str | None, Header()] = None
 ) -> tokens.Client:

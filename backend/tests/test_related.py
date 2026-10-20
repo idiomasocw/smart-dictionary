@@ -10,6 +10,7 @@ from psycopg.types.json import Jsonb
 from factory_docs import go_doc, world
 from smart_dictionary.ai.gateway import Gateway
 from smart_dictionary.cli import main
+from smart_dictionary.content import related
 from smart_dictionary.content.publish import publish
 from smart_dictionary.core import tunables
 from smart_dictionary.core.entrydoc import EntryDoc
@@ -19,7 +20,7 @@ from smart_dictionary.factory import lease
 from smart_dictionary.factory.queue import queue
 from smart_dictionary.factory.submit import Submission, submit
 from test_provisional import KETTLE, STUDENT, Model, kettle_world, lookup, row
-from test_word_requests import admin, api, ask, pie_in_wiktionary
+from test_word_requests import PERSON, admin, api, ask, pie_in_wiktionary
 
 
 def rows(sql: LiteralString, *params: Any) -> list[tuple[Any, ...]]:
@@ -219,11 +220,11 @@ def test_with_the_setting_off_or_an_unclear_part_of_speech_a_request_waits(
     with connect() as conn:
         listed(conn, "pie", "cefrj", "noun")
     main(["requests", "sync", "--dry-run"])
-    assert "approved at once: kettle -> en:kettle:n" in capsys.readouterr().out
+    assert "approved at once (auto:lists): kettle -> en:kettle:n" in capsys.readouterr().out
     assert row("select count(*) from word_requests where status = 'pending'") == (2,)
     main(["requests", "sync"])
     out = capsys.readouterr().out
-    assert "approved at once: pie -> en:pie:n" in out and "2 approved at once" in out
+    assert "approved at once (auto:lists): pie -> en:pie:n" in out and "2 approved at once" in out
     assert row("select note from word_requests where lemma = 'pie'") == (
         "auto: on cefrj, ngsl; noun/word from the lists and Wiktionary",
     )
@@ -246,7 +247,7 @@ def test_the_sync_suggests_what_published_entries_link_to(
     main(["requests", "sync"])
     out = capsys.readouterr().out
     assert "1 published entries have related links" in out
-    assert "approved at once: leave -> en:leave:v" in out
+    assert "approved at once (auto:lists): leave -> en:leave:v" in out
     assert row("select origin, status from word_requests") == ("related", "approved")
     main(["requests", "sync"])  # again: nothing new
     assert "0 new suggestions" in capsys.readouterr().out
@@ -303,3 +304,116 @@ def test_the_owner_turns_the_approval_at_once_off(migrated_database_url, anyio_b
         )  # fmt: skip
         with connect() as conn:
             assert tunables.overrides(conn)["auto_approve_listed"] is False
+
+
+def common(conn: Any, *words: str, zipf: float = 4.0) -> None:
+    for word in words:
+        conn.execute("insert into ref_freq (dataset_id, language, word, zipf)"
+                     " values ('t-freq', 'en', %s, %s)", (word, zipf))  # fmt: skip
+
+
+def test_ai_chooses_common_words_your_entries_link_to_and_you_verify_them(
+    migrated_database_url, anyio_backend_options
+):
+    with connect() as conn:
+        world(conn)
+        wiktionary(conn, "put up with", "verb", "phrasal_verb")  # in no list, but common words
+        common(conn, "put", "up", "with")
+        wiktionary(conn, "perspicacious", "adjective")  # real, but rare
+        common(conn, "perspicacious", zipf=1.5)
+        wiktionary(conn, "colour", "noun")  # color's UK spelling, as its seed lists it
+        conn.execute(
+            "insert into seed_candidates (lemma, lemma_norm, pos, kind, sources, variants,"
+            " originals) values ('color', 'color', 'noun', 'word', array['cefrj'],"
+            """ '[{"form": "colour", "regions": ["UK"]}]', array['color'])"""
+        )
+        wiktionary(conn, "tolerate", "verb")
+        common(conn, "tolerate")
+        queue(conn, lemmas=["go"])
+        batch = lease.lease(conn, 1)
+        assert batch.id is not None
+        doc = go_doc()
+        doc["related"] = [
+            {"type": "see_also", "key": "en:put_up_with:phrv"},
+            {"type": "synonym", "key": "en:perspicacious:adj"},
+            {"type": "see_also", "key": "en:colour:n"},
+        ]
+        submit(conn, batch.id, [Submission("en:go:v", doc, "pass")], produced_by={},
+               threshold=0.7)  # fmt: skip
+
+    assert rows("select lemma, status, decided_by from word_requests order by lemma") == [
+        ("perspicacious", "pending", None),  # too rare to choose without you
+        ("put up with", "approved", "ai:related"),
+    ]  # fmt: skip
+    assert row("select note from word_requests where lemma = 'put up with'") == (
+        "ai: linked from en:go:v see_also; verb/phrasal_verb from the link, as Wiktionary has"
+        " it; Zipf 4.0",
+    )
+    chosen = row(
+        "select approved_by, sources, priority < 100000 from entries"
+        " where key = 'en:put_up_with:phrv'"
+    )
+    assert chosen == ("ai:related", ["related"], True)
+
+    # One hop: a word AI chose doesn't choose more. Its links wait for you.
+    with connect() as conn:
+        conn.execute("update entries set status = 'published', doc = %s, published_at = now()"
+                     " where key = 'en:put_up_with:phrv'", (Jsonb({}),))  # fmt: skip
+        related.suggest(conn, [("en:put_up_with:phrv",
+                                [{"type": "synonym", "key": "en:tolerate:v"}])],
+                        tenant="ocw")  # fmt: skip
+    assert row("select status from word_requests where lemma = 'tolerate'") == ("pending",)
+
+    with api(anyio_backend_options) as client:
+        auth = admin()
+        stats = client.get("/v1/admin/stats", headers=auth).json()["requests"]
+        assert (stats["ai_chosen"], stats["to_verify"]) == (1, 1)
+        waiting = client.get("/v1/admin/requests", params={"to_verify": True}, headers=auth)
+        [chosen] = waiting.json()["items"]
+        assert (chosen["lemma"], chosen["decided_by"]) == ("put up with", "ai:related")
+        kept = client.post("/v1/admin/requests/confirm", headers=auth,
+                           json={"ids": [chosen["id"]], "note": "fine"})  # fmt: skip
+        assert kept.json() == {"confirmed": ["put up with"]}
+        assert client.get("/v1/admin/requests", params={"to_verify": True},
+                          headers=auth).json()["total"] == 0  # fmt: skip
+        # Confirming twice, or a request nobody approved at once, changes nothing.
+        again = client.post("/v1/admin/requests/confirm", json={"ids": [chosen["id"]]},
+                            headers=auth)  # fmt: skip
+        assert again.json() == {"confirmed": []}
+    assert row("select confirmed_by from word_requests where lemma = 'put up with'") == (
+        f"lms:{PERSON}",
+    )
+    assert row("select action, target from admin_audit") == ("request.confirm", "1 words")
+
+
+def test_with_ai_choices_off_a_linked_word_waits(migrated_database_url):
+    with connect() as conn:
+        world(conn)
+        wiktionary(conn, "put up with", "verb", "phrasal_verb")
+        common(conn, "put", "up", "with")
+        conn.execute("insert into app_settings (name, value, updated_by)"
+                     " values ('auto_approve_related', 'false', 'lms')")  # fmt: skip
+    tunables.forget()
+    with connect() as conn:
+        doc = go_doc()
+        doc["related"] = [{"type": "see_also", "key": "en:put_up_with:phrv"}]
+        publish(conn, EntryDoc.model_validate(doc), produced_by={"source": "fixtures"})
+        [made] = related.suggest(conn, [("en:go:v", doc["related"])], tenant="ocw")
+        assert made.approved is None
+    assert row("select status from word_requests") == ("pending",)
+
+
+def test_a_link_to_a_uk_spelling_opens_the_us_entry(migrated_database_url, anyio_backend_options):
+    with connect() as conn:
+        world(conn)
+        doc = go_doc()
+        doc["related"] = [{"type": "see_also", "key": "en:colour:n"}]
+        publish(conn, EntryDoc.model_validate(doc), produced_by={"source": "test"})
+        entry(conn, "en:color:n", "color", "noun")
+        conn.execute(
+            "insert into entry_forms (entry_id, form, form_norm, source)"
+            " select id, 'colour', 'colour', 'variant' from entries where key = 'en:color:n'"
+        )
+    with api(anyio_backend_options) as client:
+        card = client.get("/v1/entries/en:go:v", headers=STUDENT).json()
+        assert [link["key"] for link in card["related"]] == ["en:color:n"]

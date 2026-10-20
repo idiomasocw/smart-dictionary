@@ -2,8 +2,9 @@
 
 The routine's environment needs nothing installed: these scripts run on any Python 3.9+.
 - FACTORY_API is the server; the default is production.
-- FACTORY_TOKEN is sent as a bearer token when it's set. The cloud routine leaves it unset:
-  its environment's network secret adds the header after the request leaves the VM.
+- FACTORY_TOKEN (AUDIT_TOKEN for the audit's scripts) is sent as a bearer token when it's
+  set. The cloud routines leave it unset: their environment's network secret adds the header
+  after the request leaves the VM.
 """
 
 from __future__ import annotations
@@ -47,10 +48,14 @@ def urllib_send(method: str, url: str, body: Any, headers: dict[str, str]) -> tu
 
 class Api:
     def __init__(
-        self, base: str | None = None, token: str | None = None, send: Send | None = None
+        self,
+        base: str | None = None,
+        token: str | None = None,
+        send: Send | None = None,
+        token_env: str = "FACTORY_TOKEN",
     ) -> None:
         self.base = (base or os.environ.get("FACTORY_API") or DEFAULT_API).rstrip("/")
-        self.token = token if token is not None else os.environ.get("FACTORY_TOKEN")
+        self.token = token if token is not None else os.environ.get(token_env)
         self.send = send or urllib_send
 
     def call(self, method: str, path: str, body: Any = None, retries: int = 0) -> Any:

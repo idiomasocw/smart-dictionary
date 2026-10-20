@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     # part of speech is clear (design §6.7); off, every one waits for the owner. On by
     # default (owner's choice, 2026-10-20).
     auto_approve_listed: bool = True
+    # A word an entry links to that no list names is approved as chosen by AI when it passes
+    # the checks (design §6.7), for the owner to confirm or retire; off, it waits instead.
+    # On by default: trust the routine's model, and verify (owner's choice, 2026-10-20).
+    auto_approve_related: bool = True
+    # The audit routine's high-confidence content fixes go to repair at once, where the factory
+    # rewrites the entry with every check; off, every finding waits for the owner (design
+    # §6.6). On by default (owner's choice, 2026-10-20).
+    audit_auto_repair: bool = True
     # Audio (design §10.4). Cards link uploaded files under audio_base_url (the CDN, from
     # SSM). The audio job reads Kokoro from audio_model_dir, writes files to audio_outbox for
     # the host's uploader, and can be held to a few CPU threads.

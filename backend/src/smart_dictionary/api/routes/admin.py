@@ -4,8 +4,8 @@ state, decides word requests (design §6.7) and changes a few settings.
 - **Who:** a bearer token with the `admin` scope, required by the router itself, so no route
   can be added without it. The BBB proxy secret and factory tokens don't open it.
 - **What it never does:** name a student, show a secret, or create a token. It changes only
-  the settings in core.tunables, the decision on a word request, and single entries: add a
-  word, retire one, requeue a quarantined one.
+  the settings in core.tunables, the decision on a word request or an audit finding, and
+  single entries: add a word, retire one, requeue a quarantined one.
 - **Every change and decision** is audited with the token's name and `X-Admin-Actor`, the
   LMS's person ID of whoever was signed in. The LMS vouches for that person; the token is
   what's checked.
@@ -13,6 +13,7 @@ state, decides word requests (design §6.7) and changes a few settings.
 """
 
 import uuid
+from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -31,6 +32,7 @@ from smart_dictionary.core import tunables
 from smart_dictionary.core.entrydoc import POS, Kind
 from smart_dictionary.core.settings import AI_PROVIDERS, Settings, get_settings
 from smart_dictionary.core.text import norm
+from smart_dictionary.factory import audit as auditing
 
 
 def _guard(conn: SyncConnection, response: Response) -> None:
@@ -46,6 +48,7 @@ EntryStatus = Literal["published", "provisional", "generating", "validating", "q
                       "needs_repair", "quarantined", "candidate", "retired"]  # fmt: skip
 MissStatus = Literal["pending", "provisional", "published", "queued", "requestable", "invalid"]
 RequestStatus = Literal["pending", "approved", "rejected"]
+FindingStatus = Literal["open", "applied", "rejected", "dismissed"]
 Origin = Literal["student", "ai_entry", "related"]
 # The LMS's person ID (a UUID): no names or emails, which the dictionary never stores.
 Actor = Annotated[
@@ -124,13 +127,42 @@ class RequestStats(BaseModel):
     pending_ai_entries: int = Field(description="AI entries from before reviews, waiting")
     pending_related: int = Field(description="words entries link to, waiting")
     approved: int
-    auto_approved: int = Field(description="of the approved, those approved at once (auto:lists)")
+    auto_approved: int = Field(description="of the approved, those the lists' rule approved")
+    ai_chosen: int = Field(description="of the approved, those chosen by AI through a link")
+    to_verify: int = Field(description="approved at once, and not confirmed by you yet")
     rejected: int
+
+
+class LastAudit(BaseModel):
+    label: str | None
+    model: str | None
+    submitted_at: datetime
+    audited: int
+    findings: int
+    applied: int
+
+
+class Decisions(BaseModel):
+    type: str
+    applied: int
+    rejected: int
+
+
+class AuditStats(BaseModel):
+    open: dict[str, int] = Field(description="open findings by type, zeros included")
+    applied_at_once_24h: int = Field(description="high-confidence content fixes sent to repair")
+    entries_audited: int
+    published_never_audited: int
+    last_run: LastAudit | None
+    your_decisions_90d: list[Decisions] = Field(
+        description="per type, the findings you applied and rejected: how far to trust each"
+    )
 
 
 class Stats(BaseModel):
     entries: EntryStats
     requests: RequestStats
+    audit: AuditStats
     misses: MissStats
     ai: AiStats
     audio: AudioStats
@@ -244,8 +276,15 @@ class RequestRow(BaseModel):
     first_asked_at: datetime
     last_asked_at: datetime
     decided_at: datetime | None
-    decided_by: str | None
+    decided_by: str | None = Field(
+        description="who approved or rejected it: auto:lists and ai:related were approved at"
+        " once, for you to confirm"
+    )
     note: str | None
+    confirmed_at: datetime | None = Field(description="when you confirmed an approval at once")
+    confirmed_by: str | None
+    audited_at: datetime | None = Field(description="when the audit last read its entry")
+    open_findings: int = Field(description="the audit's open findings on its entry")
 
 
 class RequestPage(Paged):
@@ -265,6 +304,65 @@ class Rejection(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     note: str | None = Field(default=None, max_length=500)
+
+
+class FindingRow(BaseModel):
+    id: uuid.UUID
+    entry_key: str
+    lemma: str
+    entry_status: str
+    written: bool
+    chosen_by: str | None = Field(description="who approved the entry: seeds, you, auto, ai")
+    type: auditing.FindingType
+    source: Literal["rules", "ai"] = Field(description="the server's rules, or the auditor")
+    confidence: auditing.Confidence
+    target_key: str = Field(description="the entry, or the sense, example or note at fault")
+    problem: str
+    evidence: dict[str, Any]
+    proposed: dict[str, Any] = Field(description="the fix: see the contract for each type")
+    status: FindingStatus
+    created_at: datetime
+    decided_at: datetime | None
+    decided_by: str | None = Field(description="auto:audit when applied at once")
+    note: str | None
+    run: str | None
+
+
+class FindingPage(Paged):
+    items: list[FindingRow]
+
+
+class FindingDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class FindingResult(BaseModel):
+    id: uuid.UUID
+    entry_key: str
+    outcome: Literal["applied", "conflict", "skipped"]
+    detail: str | None
+
+
+class FindingResults(BaseModel):
+    results: list[FindingResult]
+
+
+class FindingsRejected(BaseModel):
+    rejected: int
+
+
+class Confirmation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class Confirmed(BaseModel):
+    confirmed: list[str] = Field(description="the headwords confirmed; others were skipped")
 
 
 class NewEntry(BaseModel):
@@ -438,11 +536,15 @@ def requests_list(
     status: RequestStatus | None = "pending",
     origin: Origin | None = None,
     q: Prefix = None,
+    to_verify: Annotated[
+        bool, Query(description="approved at once and not confirmed yet (any status given)")
+    ] = False,
     page: Page = 1,
     per_page: PerPage = 50,
 ) -> RequestPage:
-    rows, total = word_requests.listing(conn, status=status, origin=origin, q=_prefix(q),
-                                        page=page, per_page=per_page)  # fmt: skip
+    rows, total = word_requests.listing(conn, status=None if to_verify else status, origin=origin,
+                                        q=_prefix(q), page=page, per_page=per_page,
+                                        to_verify=to_verify)  # fmt: skip
     return RequestPage(items=[RequestRow.model_validate(row) for row in rows],
                        **_paging(page, per_page, total))  # fmt: skip
 
@@ -482,6 +584,20 @@ def request_approve(
     return _request_row(conn, request_id)
 
 
+@router.post("/requests/confirm")
+def requests_confirm(
+    conn: SyncConnection, client: AdminClient, body: Confirmation, actor: Actor = None
+) -> Confirmed:
+    """Keep words approved at once (auto:lists, ai:related): they leave the to-verify list. To
+    undo one instead, retire its entry."""
+    lemmas = word_requests.confirm(conn, body.ids, decided_by=audit.decided_by(client, actor))
+    if lemmas:
+        audit.record(conn, client, actor, "request.confirm", f"{len(lemmas)} words", None,
+                     {"lemmas": lemmas, "note": body.note})  # fmt: skip
+    conn.commit()
+    return Confirmed(confirmed=lemmas)
+
+
 @router.post("/requests/{request_id}/reject")
 def request_reject(
     conn: SyncConnection,
@@ -503,6 +619,62 @@ def request_reject(
                  {"status": "rejected", "retired": retired})  # fmt: skip
     conn.commit()
     return row
+
+
+@router.get("/findings")
+def findings(
+    conn: SyncConnection,
+    status: FindingStatus | None = "open",
+    type: auditing.FindingType | None = None,
+    source: Literal["rules", "ai"] | None = None,
+    confidence: auditing.Confidence | None = None,
+    q: Prefix = None,
+    key: Annotated[str | None, Query(max_length=200, description="one entry's")] = None,
+    page: Page = 1,
+    per_page: PerPage = 50,
+) -> FindingPage:
+    """The audit's findings (design §6.6): open ones first, the most confident first."""
+    rows, total = auditing.listing(conn, status=status, kind=type, source=source,
+                                   confidence=confidence, q=_prefix(q), key=key, page=page,
+                                   per_page=per_page)  # fmt: skip
+    return FindingPage(items=[FindingRow.model_validate(row) for row in rows],
+                       **_paging(page, per_page, total))  # fmt: skip
+
+
+@router.post("/findings/apply")
+def findings_apply(
+    conn: SyncConnection,
+    client: AdminClient,
+    settings: Annotated[Settings, Depends(get_settings)],
+    body: FindingDecision,
+    actor: Actor = None,
+) -> FindingResults:
+    """Apply findings: a content fix sends its entry to repair, a missing part of speech is
+    added, a wrong kind, a twin or a word to remove is retired. One that can't be applied
+    stays open, with the reason."""
+    results = auditing.apply(conn, body.ids, decided_by=audit.decided_by(client, actor),
+                             note=body.note, tenant=settings.default_tenant)  # fmt: skip
+    applied = [str(result.id) for result in results if result.outcome == "applied"]
+    if applied:
+        audit.record(conn, client, actor, "finding.apply", f"{len(applied)} findings", None,
+                     {"ids": applied, "note": body.note})  # fmt: skip
+    conn.commit()
+    return FindingResults(results=[FindingResult(**asdict(result)) for result in results])
+
+
+@router.post("/findings/reject")
+def findings_reject(
+    conn: SyncConnection, client: AdminClient, body: FindingDecision, actor: Actor = None
+) -> FindingsRejected:
+    """Close findings you disagree with: nothing changes, and the rules won't raise them
+    again."""
+    count = auditing.reject(conn, body.ids, decided_by=audit.decided_by(client, actor),
+                            note=body.note)  # fmt: skip
+    if count:
+        audit.record(conn, client, actor, "finding.reject", f"{count} findings", None,
+                     {"ids": [str(i) for i in body.ids], "note": body.note})  # fmt: skip
+    conn.commit()
+    return FindingsRejected(rejected=count)
 
 
 @router.get("/settings")
