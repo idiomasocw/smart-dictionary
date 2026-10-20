@@ -130,7 +130,8 @@ any ──(owner)──▶ retired
 
 **What students see** (`content/visibility.py`, revision 0012): an entry that's **approved, has a published document and isn't retired**. The pipeline status doesn't decide it:
 - **An entry being rewritten or repaired** (`generating`, `needs_repair`, `quarantined`) keeps showing the document it last published. A Beta entry never vanishes while the routine replaces it, and a search that points to it never opens a 404.
-- **Approved** (`entries.approved_at`, `approved_by`) means the owner chose the word: seeded through `seeds queue`, loaded as a fixture, or approved in the console (§6.7). The routine leases only approved entries.
+- **Approved** (`entries.approved_at`, `approved_by`) means the owner chose the word: seeded through `seeds queue`, loaded as a fixture, approved in the console, or approved at once by the owner's rule (`auto:lists`, §6.7). The routine leases only approved entries.
+- **A seed whose entry existed first** (a Beta AI wrote for a search, a fixture) is linked to that entry, which is then approved. Before revision 0013, `seeds queue` skipped such a key and left the seed unlinked, so revision 0012 took *raise*, *expect* or *actually* for words nobody chose and sent them to review; 0013 linked them.
 
 **Leases fix the old "stuck in PROCESSING" bug (H3).**
 - A leased batch sets `lease_batch_id`, `lease_expires_at` (3 h) and `leased_from`, the status the entry had before (revision 0007).
@@ -433,7 +434,7 @@ class Sense(BaseModel):
 
 class Related(BaseModel):
     type: Literal["synonym", "antonym", "family", "confusable", "see_also"]
-    key: str                           # entry or sense key (resolved when it exists)
+    key: str                           # an entry key; the target may not exist yet
     note: str | None = None            # nuance, ≤ 120 chars
 
 class Pattern(BaseModel):              # required for phrasal verbs, idioms and phrases
@@ -458,6 +459,10 @@ class EntryDoc(BaseModel):
     provisional: bool = False
 ```
 
+**Related links** (`content/related.py`) name entries by key, and the routine may link a word the dictionary lacks or name it under another key:
+- **A card shows a link** only when an entry students see stands for it: the key itself; else the same word and part of speech under another homograph (`en:tv:n` opens `en:tv:n~2`); else, for a multiword expression, its entry of any kind, with or without its article (`en:by_the_way:phr` opens the idiom). Other links stay in the document, hidden, and appear once their entry is shown. The card's ETag covers the links, so a cached card picks up a new one.
+- **A link to a word with no entry at all** becomes a suggestion for the owner when the entry publishes (§6.7).
+
 **Filled by the server, not the AI:** frequency band, inflected forms of the lemma and of each spelling variant (UniMorph/LemmInflect: *realise* → *realised*), audio, embeddings, L1 forms, and `quality`. The AI may add irregular forms and spelling variants, which the validators then check.
 
 ### 3.6 Duplicates: what's expected and what isn't
@@ -471,7 +476,7 @@ One entry per headword, part of speech and meaning (the owner's headword policy,
 
 **Duplicates, to retire:**
 - **The same word in other capitals:** *cd* and *CD*.
-- **One expression under two kinds:** *by the way* as an idiom and as a phrase. `seeds queue` now refuses the second kind, and so does the console's Add.
+- **One multiword expression in two entries:** *by the way* as an idiom and as a phrase, *miss the boat* as an idiom and as a verb, *the last straw* and *last straw*. `expression_of(lemma_norm)` (revision 0013) is the headword without a leading article while two words remain, and one expression takes one entry under any kind. `seeds queue` links a seed to the expression's entry instead of queuing a second one, and the console's Approve and Add answer 409 naming the entry that exists. One headword of one kind under two parts of speech, or as two homographs, stays two entries: *a few* as a determiner and as a pronoun, *big brother* and *Big Brother*.
 - **Hyphen against space:** *face to face* and *face-to-face*. Keep the hyphenated one: its forms include the spaced spelling (`spacing_variants`).
 - **A preposition that's only a complement:** *brush up* and *brush up on*. Keep one entry, and let the preposition be a pattern.
 - **A UK spelling seeded on its own:** *computerise* beside *computerize*. Retire it, and list it as the US seed's variant.
@@ -637,7 +642,7 @@ Caddy accepts `bbb` traffic only from the BBB server's IP. Factory routes are to
 | `queued` | The routine is writing this word, under `entry_key`; or AI failed it three times and it's next in the factory's queue | Says the word is coming soon |
 | `requestable` | A real headword nobody chose, `headword` (§6.7): no AI writes it | "Not in the dictionary yet", with a button to request `headword` (`POST /v1/requests`) |
 | `requested` | This student requested `headword` already | "You asked for this word; it's waiting for review" |
-| `invalid` | Nothing to generate or request: a word the search's language doesn't know, a misspelling, a word no dictionary has, one the owner rejected, blocked, or over 4 words | "Not found", with `did_you_mean` |
+| `invalid` | Nothing to generate or request: a word the search's language doesn't know, a misspelling, a word no dictionary has, one the owner rejected, blocked, or longer than 10 words (8 in Spanish) | "Not found", with `did_you_mean` |
 | `quota_exceeded` | The student sent 30 missed searches to AI in the last 24 hours (the owner can change the cap, §5.5) | Asks them to try again tomorrow |
 | `unavailable` | AI is off, or its last attempt at this word failed (it tries again 10 minutes later, 3 times at most) | "Not found yet" |
 
@@ -666,10 +671,10 @@ The audit's admin dashboard (§12 there) arrives as a console inside the LMS, wh
 - `GET /v1/admin/misses`: missed searches and their AI attempts; `stuck=true` lists those AI gave up on that no seed covers.
 - `GET /v1/admin/audit`: every setting change.
 
-- `GET /v1/admin/requests`, with `POST …/approve` and `…/reject`: the word-request queue (§6.7).
+- `GET /v1/admin/requests`, with `POST …/approve` and `…/reject`: the word-request queue (§6.7), students' requests and related words, each with its evidence and its `twins`.
 
 **What it does to single entries** (`admin/curation.py`), each audited (`entry.add`, `entry.retire`, `entry.requeue`):
-- **`POST /v1/admin/entries`** `{lemma, pos, kind, note?}`: add a word, queued and approved, first in the factory's queue. A pending request for it is approved with it. It refuses a key that exists, or the same expression under another kind.
+- **`POST /v1/admin/entries`** `{lemma, pos, kind, note?}`: add a word, queued and approved, first in the factory's queue. A pending request for it is approved with it. It refuses a key that exists, or another entry for the same multiword expression (§3.6).
 - **`POST /v1/admin/entries/{key}/retire`** `{note?}`: take a duplicate or an unwanted word out of the dictionary. Its key is kept forever, searches that pointed to it answer "not found", and students can't request it. Not while the routine is writing it.
 - **`POST /v1/admin/entries/{key}/requeue`** `{note?}`: give a quarantined entry another go once its cause is fixed. Its attempts reset, and it goes back to the queue, or to the Beta rewrites when it has a Beta.
 
@@ -683,6 +688,7 @@ It never names a student: AI use is counted per search, and the console sees how
 | `ai_searches_per_day` | `AI_SEARCHES_PER_DAY`, 30 | 0–200 |
 | `ai_monthly_budget_usd` | `AI_MONTHLY_BUDGET_USD`, 5 | 0–50 |
 | `word_requests_per_day` | `WORD_REQUESTS_PER_DAY`, 10 | 0–50 |
+| `auto_approve_listed` | `AUTO_APPROVE_LISTED`, true | On or off |
 | `factory_publish_threshold` | `FACTORY_PUBLISH_THRESHOLD`, 0.7 | 0.5–1 |
 
 - **Where they live:** an override is a row in `app_settings` and wins over the environment; `DELETE` removes it, and the environment's value applies again. Each API process rereads them every 15 seconds, so a change needs no deploy.
@@ -739,6 +745,7 @@ You asked whether there's a better way to reach 20k than your own lists. My answ
 7. **Curation run** (a special routine batch, about 500 candidates per run). Claude marks each candidate keep/drop, confirms kind and POS, flags offensive or archaic items, scores learner usefulness from 1 to 5 (for multiword items), and **proposes missing high-value phrasal verbs and idioms**.
 8. **Export** the ranked list as CSV (`GET /v1/admin/seeds/export`) for you to skim, then **queue** it. `smart-dictionary seeds queue` turns candidates into `queued` entries.
    - **What it takes:** only candidates with a part of speech and kind that form a valid entry and aren't rejected. `--lemma`, `--level` and `--limit` narrow the selection, and `--dry-run` previews it.
+   - **A candidate whose word has an entry already** is linked to that entry, and the entry is approved, instead of queuing it: its own key, or for a multiword expression its entry of another kind or article (§3.6). A pending review for that entry closes as approved by `seeds`.
    - **Priority within the queue:** the level comes first (A1 to C2, then words with no level), then your lists ahead of the open lists, then Zipf. The first milestone is A1–B2 coverage, so this departs from tier order. Tier order would put CEFR-J's basic words behind your long tail.
 
 **Built so far (roadmap 2.1):** `smart-dictionary seeds import` runs steps 2–4 and 6 into `seed_candidates`, and `seeds export` writes the ranked CSV of step 8 to `data/raw/seed-candidates.csv`.
@@ -847,6 +854,7 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
   - τ is `FACTORY_PUBLISH_THRESHOLD`, 0.7 until the golden set calibrates it.
 - **Repairs:** a failing entry goes to `needs_repair` with its issues in the revision's `qa`, which the next pack carries. After 2 failed repairs it's quarantined. Every submission is a revision.
 - **`POST /v1/factory/validate`** runs the same checks without saving anything. The routine uses it while writing.
+- **Related links to missing words** become suggestions once their entry publishes (§6.7). That step runs in a savepoint: a failure there is logged and never holds the entry back.
 - **`POST /v1/factory/batches/{id}/entries`** reports each entry's outcome:
   - `published`, `needs_repair` or `quarantined`;
   - `not_leased` when the batch no longer holds that entry;
@@ -865,8 +873,8 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
 **AI writes a Beta entry only for a word the owner chose** (the owner's rule, 2026-10-20). A word is chosen when it's seeded (the curated lists, through `seeds queue`) or approved in the console (§6.7). Every other word a student searches for gets no AI entry: a real headword becomes requestable, and the rest is "not found". A student's search can never add a word to the dictionary on its own.
 
 **The lookup decides with SQL only** and answers at once (`ai/provisional.py`, `resolve()`):
-1. **The gate:** at most 4 words, each known to the reference data in the search's language (`ref_freq` Zipf ≥ 1.0, `ref_forms`, or English Wiktionary). Anything else is `invalid`. A blocked word passes only when the owner chose it (*kill*, an A1 verb); nobody can request one.
-2. **The entries it may stand for:** the search and its dictionary forms (*geese* → *goose*, *gave up* → *give up*, lemminflect), matched against `entries.lemma_norm`. The best one decides:
+1. **The gate:** at most 10 words (8 in Spanish), each known to the reference data in the search's language (`ref_freq` Zipf ≥ 1.0, `ref_forms`, or English Wiktionary). Anything else is `invalid`. A blocked word passes only when the owner chose it (*kill*, an A1 verb); nobody can request one.
+2. **The entries it may stand for:** the search and its dictionary forms (*geese* → *goose*, *gave up* → *give up*, lemminflect), with or without a leading article (*last straw* ↔ *the last straw*), matched against `entries.lemma_norm`. The best one decides:
    - **shown already** under another form: `ready`, with its key;
    - **approved, and nobody has written it** (`candidate`, `queued`): `generating`, and one AI job writes it after the response;
    - **approved, and the factory is on it:** `queued`, with its key;
@@ -967,7 +975,9 @@ audits, golden set ───┘
 
 ### 6.7 Word requests: the owner approves what isn't seeded
 
-A real word nobody seeded waits for the owner (`content/word_requests.py`, revision 0012).
+A real word nobody seeded waits for the owner (`content/word_requests.py`, revisions 0012 and 0013). It comes from a student's request (origin `student`), a link in a published entry (`related`), or a Beta AI wrote before reviews (`ai_entry`).
+
+**The word limit** is 10 words, the longest seeded expression, so *hit the nail on the head* (6) can be requested. Until 2026-10-20 it was 4, and every longer idiom answered "not found" with no button.
 
 **Requestable** means a missed search whose headword:
 - **is a Wiktionary headword.** The import leaves misspellings out (§3.4), so *recieve* or *definately* never are, and neither is a word no dictionary has;
@@ -982,7 +992,7 @@ The lookup then answers `requestable` with the headword, and the plugin offers a
 - **Each student has 10 requests a day** (`WORD_REQUESTS_PER_DAY`, or the console's `word_requests_per_day`). Asking again for the same word costs nothing.
 - **Later lookups by that student** answer `requested`.
 - **A refusal is an answer, not an error:** only `requested` is 202, and every other outcome is 200 with its `status` (`exists`, `quota_exceeded`, `not_requestable`, `no_student`). The student did nothing wrong, and a browser logs every 4xx as a red console error in class. A refusal writes no request and no vote. A control character in the query (400) and a malformed body (422) stay errors.
-- **A leading article doesn't hide a headword:** a missed search of three or more words also tries itself without *a*, *an* or *the*, so *the last straw* finds *last straw*.
+- **A leading article doesn't hide a headword:** a missed search of three or more words also tries itself without *a*, *an* or *the*, so *the last straw* finds *last straw*, and one of two or more words tries itself with *the* and *a* or *an*, so *last straw* finds *the last straw*.
 
 **The owner decides in the console** (§5.5): `GET /v1/admin/requests` lists pending requests, most asked first. Each comes with its evidence: students, searches, example queries, Zipf frequency, the open lists that name it, its seed candidates' decisions, and Wiktionary's parts of speech, likeliest first.
 - **Approve** with the headword, part of speech and kind:
@@ -992,6 +1002,17 @@ The lookup then answers `requestable` with the headword, and the plugin offers a
   - other unapproved entries AI made for the same headword are retired.
 - **Reject:** the headword is closed for good. Students see "not found" and can't request it again, and any unapproved entry for it is retired, its key kept forever.
 - **Every decision** is audited (`request.approve`, `request.reject`) with the token's name and the person signed in.
+
+**Related words** (`content/related.py`): when an entry publishes, each link to a word with no entry at all, retired ones included, becomes a request of origin `related`. `word_request_links` keeps which entries link to it and how (`linked_from`). Typos, blocked words and words the owner declined are skipped, as for students. Nobody waits for one, so once approved it takes its natural place in the queue (level, then frequency), and AI writes no Beta for it until a student searches. `smart-dictionary requests sync` does the same for every published entry, for links written before this.
+
+**Approved at once** (`auto_approve`; the console's `auto_approve_listed`, on by default, the owner's choice of 2026-10-20). A student's request or a related word is approved without waiting, as `auto:lists`, when:
+- **a curated list or a seed names it** (`ref_lists`, or a seed candidate that wasn't rejected): the owner's lists and the open learner lists are the owner's choice of sources, so such a word is a gap, not a novelty;
+- **the dictionary has no entry for it** under any part of speech, retired ones included: it fills gaps and never adds a part of speech to a word that has one;
+- **its part of speech and kind are clear:** the seed's; else the link's, when Wiktionary has it; else Wiktionary's one option under the part of speech CEFR-J or Octanove gives; else Wiktionary's only option.
+
+Anything else waits for the owner: *hit the nail on the head* is in no list, and *light* is a noun and an adjective. The request's `note` records why it was approved (`auto: on ngsl; noun/word from Wiktionary, its only one`), and the console counts them (`auto_approved`). A student's request is decided once the answer has gone, and when approved, AI writes its Beta at once. `requests sync` applies the rule to what was pending before.
+
+**One multiword expression, one entry:** Approve refuses a key while an approved entry has the same expression under another kind or article (409, naming it; §3.6). Each request row lists the entries for its headword (`twins`), so the owner sees the clash before deciding.
 
 **Entries from before reviews:** revision 0012 left unapproved the Beta entries AI wrote for words nobody seeded. They're hidden (the owner's choice, 2026-10-20) and wait in the queue as requests of origin `ai_entry`, with their first definition shown. Approving shows them again at once; rejecting retires them.
 

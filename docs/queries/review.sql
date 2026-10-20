@@ -1,6 +1,6 @@
--- Owner reviews, for Supabase's SQL Editor (2026-10-20). Blocks 1 and 3 only read. Blocks 2
--- and 4 change entries: run each on its own, by selecting it. Block 2 is for after the deploy
--- that exempts a headword from its own V10.
+-- Owner reviews, for Supabase's SQL Editor (2026-10-20). Blocks 1, 3 and 5 only read. Blocks
+-- 2, 4 and 6 change entries: run each on its own, by selecting it. Block 2 is for after the
+-- deploy that exempts a headword from its own V10; blocks 5 and 6 need migration 0013.
 
 -- 1. Quarantined entries and why: the checks their latest submission failed.
 select e.key, e.cefr, r.created_at,
@@ -63,4 +63,32 @@ where published_at is null
     'en:meth:n',
     'en:stark_naked:n'
   )
+returning key;
+
+-- 5. One multiword expression with two approved entries: another kind (miss the boat as an
+--    idiom and as a verb) or with and without its article (the last straw, last straw). One
+--    headword of one kind under two parts of speech (a few, determiner and pronoun) or as two
+--    homographs (big brother, Big Brother) is left out: those are two entries on purpose.
+--    Keep the written one of each pair. A good deal and good deal: decide whether they mean
+--    the same.
+select expression_of(a.lemma_norm) as expression,
+       a.key as first_key, a.status::text as first_status,
+       a.published_at is not null as first_written,
+       b.key as second_key, b.status::text as second_status,
+       b.published_at is not null as second_written
+from entries a
+join entries b on b.language = 'en' and b.key > a.key
+              and expression_of(b.lemma_norm) = expression_of(a.lemma_norm)
+where a.language = 'en' and strpos(a.lemma_norm, ' ') > 0
+  and a.status <> 'retired' and b.status <> 'retired'
+  and a.approved_at is not null and b.approved_at is not null
+  and (a.lemma_norm <> b.lemma_norm or a.kind <> b.kind)
+order by 1;
+
+-- 6. Retire the unwritten one of the two pairs block 5 found on 2026-10-20. The idioms stay:
+--    AI wrote them and you approved them. The console's Retire does the same, one at a time;
+--    searches that pointed to these keys find the idioms on their next lookup.
+update entries set status = 'retired', updated_at = now()
+where published_at is null and status::text in ('candidate', 'queued')
+  and key in ('en:miss_the_boat:v', 'en:last_straw:idiom')
 returning key;
