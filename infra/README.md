@@ -241,6 +241,8 @@ cat current-image
 - **Each provider is optional.** One without a key is skipped, and with no key at all a missing word just isn't generated; lookups never depend on AI.
 - **Any one key is enough to start;** the others take over when the one before fails. Once the month's $5 is spent, every paid provider is skipped and only Groq's free tier answers.
 - **The cap is `AI_MONTHLY_BUDGET_USD`,** 5 by default; store that parameter only to change it.
+- **Each student can send 30 missed searches a day to AI** (`AI_SEARCHES_PER_DAY`). The window is the last 24 hours, so raising the cap lets a student who reached it search again right away.
+- **The LMS's console can change the order, both caps and the publish threshold** without a deploy (see "The admin console" below). Its value wins over the parameter here until you reset it there.
 
 Store each key like this, then deploy. For DeepSeek or Groq, change the name the same way:
 
@@ -263,6 +265,7 @@ MSYS_NO_PATHCONV=1 aws ssm get-parameters-by-path --region us-east-2 --path /sma
 - **A provider runs only when it's in the list and its key is stored.** One left out isn't used, even with a key.
 - **A misspelled or repeated name is ignored,** with a warning in the API's log; it never stops the API.
 - **Changes apply at the next deploy,** like every parameter here.
+- **The console's order wins** while one is set there. The parameter is the default it resets to.
 
 See the order (on your PC). If it says `ParameterNotFound`, nothing is stored and the built-in order applies:
 
@@ -301,6 +304,60 @@ MSYS_NO_PATHCONV=1 aws ssm get-parameter --region us-east-2 --with-decryption --
 **Changing the AWS resources.** Edit `infra/cdk/stack.py`, then run `npx cdk diff` and `npx cdk deploy --require-approval never` from `infra/cdk`.
 
 The host's image is pinned in `cdk.context.json`. Refreshing it (`npx cdk context --reset <key>`) replaces the host, so deploy again afterwards.
+
+## The admin console
+
+The LMS shows you the dictionary: every entry by letter and status, what needs repair and why, missed searches, AI spend, and four settings you can change. The LMS backend calls `/v1/admin/*` with a token of its own (design §5.5, contract `docs/contracts/lms-integration.md` §4).
+
+**Why a new token, and not the BBB secret the LMS already has.** That secret lives on the BBB server and vouches for students; anyone who has it could otherwise run your dictionary. The admin token is separate: you can revoke it alone, it opens nothing else, and later integrations never get one.
+
+### Create the token
+
+From `backend/`, in Git Bash:
+
+```bash
+read -rsp "Owner DATABASE_URL (session pooler): " DATABASE_URL && echo && export DATABASE_URL
+uv run smart-dictionary admin token --name lms | tr -d '\r\n' | clip
+unset DATABASE_URL
+```
+
+- **The first line** points the command at production without showing the URL or saving it in your history.
+- **The second line** creates the token and puts it on the clipboard instead of the screen. It starts with `sda_`. The database keeps only its hash, so this is the only time you'll see it.
+- **The third line** forgets the URL, so later commands use the local database again.
+
+Paste it into the LMS's server-side secrets as `DICTIONARY_ADMIN_TOKEN`, wherever the LMS keeps its other API secrets. Never put it in a frontend variable: anything the browser downloads, anyone can read.
+
+**Check it.** This should print `200`; a wrong token prints `401`:
+
+```bash
+read -rsp "Admin token: " TOKEN && echo && curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $TOKEN" https://dictionary.onecultureworld.com/v1/admin/stats; unset TOKEN
+```
+
+**To replace it** (for example, if it leaked): create a new one with `--name lms-2` the same way, put it in the LMS, then revoke the old one with `uv run smart-dictionary admin revoke --name lms`. Revoking takes effect at once.
+
+### Optional: accept the token only from the LMS server
+
+Then a leaked token is useless anywhere else: Caddy answers `/v1/admin/*` from any other address with a plain 404.
+
+1. **Find the address the LMS calls from.** Run this on the LMS server; it prints the public address AWS sees for it. If the LMS runs on more than one server, run it on each:
+
+   ```bash
+   curl -s https://checkip.amazonaws.com
+   ```
+
+2. **Store it, then deploy.** Separate several addresses with spaces. `/32` means exactly that one address:
+
+   ```bash
+   MSYS_NO_PATHCONV=1 aws ssm put-parameter --region us-east-2 --type String --name /smart-dictionary/prod/caddy/ADMIN_ALLOWED_IPS --value "203.0.113.10/32"
+   ```
+
+3. **Check it from your PC,** which isn't on the list. It should now print `404` instead of `401`:
+
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}\n" https://dictionary.onecultureworld.com/v1/admin/stats
+   ```
+
+If the LMS server's address changes (a new instance without an Elastic IP, for example), the console gets 404s. Store the new address with `--overwrite` and deploy, or delete the parameter and deploy to accept every address again.
 
 ## Audio storage
 

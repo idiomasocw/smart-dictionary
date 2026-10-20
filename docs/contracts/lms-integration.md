@@ -94,7 +94,94 @@ During the pilot, the plugin loads only in chosen groups' meetings:
 
 ---
 
-## 4. Planned, not yet agreed
+## 4. L6: the owner's console (dictionary implements, LMS calls)
+
+The LMS gives the owner a console for the dictionary: every entry with its definition, by letter and status; the pipeline's state, including what needs repair and why; missed searches; and the few settings the owner can change. The dictionary serves the data at `/v1/admin/*`, and the LMS backend calls it and renders the pages.
+
+### Auth and safety
+
+- **Token:** `DICTIONARY_ADMIN_TOKEN`, sent as `Authorization: Bearer <token>`. It starts with `sda_`. The owner creates it with `smart-dictionary admin token --name lms`, and the LMS keeps it with its other server secrets.
+- **It isn't any other credential.** It's not the BBB proxy secret, the dictionary's factory token, or `DICTIONARY_SERVICE_TOKEN` (§2, the other direction). Each of those opens something else, and none of them opens this.
+- **Server to server only.** The token never reaches a browser, and the browser never calls the dictionary.
+  - The LMS exposes its own routes, guarded by its owner or super-admin check, and calls the dictionary from its backend. The dictionary sends no CORS headers, so a browser couldn't call it anyway.
+  - The LMS calls only the fixed paths below, with parameters it has validated. It never forwards a path or query string the browser composed, which would turn it into an open door to the admin API.
+- **Writes say who.** `PUT` and `DELETE` send `X-Admin-Actor: <personId>` of the signed-in owner, which the dictionary records in its audit. It's an ID only: the header accepts letters, digits, `.`, `_`, `:` and `-` (64 at most), so names and emails are refused.
+- **The address can be pinned.** The owner may store the LMS server's public egress IP in the dictionary's `ADMIN_ALLOWED_IPS`. Calls from any other address then get a plain 404.
+- **Base URL:** `DICTIONARY_API_URL`, `https://dictionary.onecultureworld.com`.
+- **Timeouts:** 10 s per call. Retry reads at most once, and never retry a write on its own.
+- **Caching:** none. Responses carry `Cache-Control: no-store`, and the LMS shouldn't cache them either.
+
+### Endpoints
+
+All `GET` unless marked. Pages are numbered from 1, `per_page` is at most 200 (default 50), and every list response has `page`, `per_page`, `total`, `pages` and `items`.
+
+| Call | Parameters | Returns |
+|---|---|---|
+| `/v1/admin/stats` | — | Entries by status with a `meaning` for each, `total`, `published_last_24h`, `waiting`, `days_to_clear`; missed searches by status and `stuck`; AI use (`month_spend_usd`, `monthly_budget_usd`, `searches_per_day`, `searches_last_24h`, `students_at_cap`, `provider_order`, `providers_with_keys`, `active_providers`, `calls_last_24h` by provider and outcome); audio `uploaded` and `waiting`; the last 10 factory runs |
+| `/v1/admin/entries` | `letter` (`a`–`z`, or `other` for digits and symbols), `status`, `q` (the start of the headword, any case or accents), `sort` (`lemma` or `updated`, the newest change first), `page`, `per_page` | Entries: `key`, `lemma`, `pos`, `kind`, `homograph`, `cefr`, `status`, `quality`, `attempts`, `definition` (the first sense's, null until written), `senses`, `problems` (why the latest submission was sent back, for `needs_repair` and `quarantined`), `updated_at`, `published_at` |
+| `/v1/admin/entries/letters` | `status` | 27 rows, `a`–`z` then `other`, each with its `count`, zeros included |
+| `/v1/admin/entries/{key}` | — | One entry's row, plus `priority`, `freq_zipf`, `sources`, `created_at`, `lease_expires_at`, the full `doc` (null until written), and its last 20 `revisions`, each with `outcome`, `score`, `problems`, `warnings`, `produced_by` and the full `qa` |
+| `/v1/admin/misses` | `status`, `stuck` (`true`: AI gave up and no seed covers the word), `q`, `page`, `per_page` | Missed searches, the latest first: `tenant`, `language`, `query`, `hits`, `status`, `entry_key`, `attempts`, `stuck`, `last_error`, `first_seen`, `last_seen`, `last_attempt_at` |
+| `/v1/admin/settings` | — | `settings` (below), `known_providers`, `providers_with_keys` and `applies_within_seconds` |
+| `PUT /v1/admin/settings/{name}` | Body `{"value": …}`, header `X-Admin-Actor` | The setting as it is now |
+| `DELETE /v1/admin/settings/{name}` | Header `X-Admin-Actor` | The setting, back on its default |
+| `/v1/admin/audit` | `page`, `per_page` | Changes, newest first: `created_at`, `client`, `actor`, `action` (`setting.set` or `setting.reset`), `target`, `before`, `after` |
+
+Entry statuses: `published`, `provisional`, `generating`, `validating`, `queued`, `needs_repair`, `quarantined`, `candidate`, `retired`. Missed-search statuses: `pending`, `provisional`, `published`, `queued`, `invalid`.
+
+**Settings.** Each one has `name`, `kind` (`providers`, `integer` or `number`), `description`, `minimum`, `maximum` (null for `providers`), `value` (what applies now), `default` (the dictionary's environment), `overridden`, `updated_at` and `updated_by`.
+
+| `name` | `value` | Bounds |
+|---|---|---|
+| `ai_provider_order` | List of names from `known_providers`, first tried first | Each once; `[]` turns request-time AI off. A provider missing from `providers_with_keys` is skipped |
+| `ai_searches_per_day` | Whole number: missed searches each student can send to AI in 24 hours | 0–200 |
+| `ai_monthly_budget_usd` | The month's cap on paid AI, in USD | 0–50 |
+| `factory_publish_threshold` | The score a factory entry needs to publish | 0.5–1 |
+
+A change applies within `applies_within_seconds` (15), with no deploy. `DELETE` goes back to `default`.
+
+### Examples
+
+`GET /v1/admin/entries?letter=g&per_page=2`:
+
+```json
+{
+  "page": 1, "per_page": 2, "total": 1, "pages": 1,
+  "items": [{
+    "key": "en:go:v", "lemma": "go", "pos": "verb", "kind": "word", "homograph": 1,
+    "cefr": "A1", "status": "needs_repair", "quality": 1.0, "attempts": 1,
+    "definition": null, "senses": 0,
+    "problems": ["V11 en:go:v#1: 1 examples; allowed 2-3"],
+    "updated_at": "2026-10-20T11:46:50.791712Z", "published_at": null
+  }]
+}
+```
+
+`PUT /v1/admin/settings/ai_searches_per_day` with `{"value": 40}`:
+
+```json
+{
+  "name": "ai_searches_per_day", "kind": "integer",
+  "description": "Missed searches each student can send to AI in 24 hours.",
+  "minimum": 0.0, "maximum": 200.0, "value": 40, "default": 30, "overridden": true,
+  "updated_at": "2026-10-20T11:46:51.138771Z", "updated_by": "lms"
+}
+```
+
+### Errors
+
+RFC 9457 `application/problem+json`, with a stable `code`:
+
+| Status | `code` | When | What the console shows |
+|---|---|---|---|
+| 401 | `unauthorized` | Missing, wrong or revoked token | "The dictionary rejected the console's token": an operator problem, not the user's |
+| 404 | `not_found` | No such entry or setting; also any call from an address outside `ADMIN_ALLOWED_IPS` | "Not found" |
+| 422 | `invalid_value` | A setting out of bounds; `detail` says why, e.g. `expected a value from 0 to 50` | `detail`, next to the field |
+| 422 | `invalid_request` | A bad parameter, body or `X-Admin-Actor` | A bug in the LMS: log it |
+
+---
+
+## 5. Planned, not yet agreed
 
 | ID | What | Direction |
 |---|---|---|
@@ -106,7 +193,7 @@ Each becomes its own section here before anyone implements it.
 
 ---
 
-## 5. Test checklist (LMS side)
+## 6. Test checklist (LMS side)
 
 - [ ] Guard: a missing token, a wrong token, and the other routine tokens are all rejected with 401.
 - [ ] A known student returns exactly the eight fields, with the `cefrLevel` of the active enrollment.
@@ -115,3 +202,8 @@ Each becomes its own section here before anyone implements it.
 - [ ] An unknown UUID returns 404; a malformed UUID returns 400 or 404, never 500.
 - [ ] Logs contain no names, emails or phones.
 - [ ] L2: a flagged group's `create` call includes `pluginManifests`; an unflagged group's call doesn't.
+- [ ] L6: the console's routes refuse everyone but the owner (or super-admin) with the LMS's own 401/403, before any call to the dictionary.
+- [ ] L6: `DICTIONARY_ADMIN_TOKEN` appears in no browser response, page source, bundle or log.
+- [ ] L6: the LMS calls only the listed paths, and validates `letter`, `status`, `q`, `page` and `per_page` before passing them on.
+- [ ] L6: every `PUT` and `DELETE` sends `X-Admin-Actor` with the signed-in person's ID.
+- [ ] L6: a dictionary 401, 404, 422 or timeout shows a message and never breaks the rest of the LMS.
