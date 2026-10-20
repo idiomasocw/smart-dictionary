@@ -7,7 +7,7 @@ from typing import Any
 import anthropic
 import httpx2
 import pytest
-from pydantic import BaseModel, Field, SecretStr, ValidationError
+from pydantic import BaseModel, Field, SecretStr
 
 from smart_dictionary.ai.gateway import Breaker, Gateway, Task, Unavailable, cost
 from smart_dictionary.ai.providers import (
@@ -227,10 +227,13 @@ def test_the_providers_answer_in_the_order_the_owner_set():
     assert settings.ai_providers == ["groq", "gemini"]
     reordered = get_settings().model_copy(update={**KEYS, "ai_provider_order": "groq,gemini"})
     assert [provider.name for provider in chain(reordered)] == ["groq", "gemini"]
-    for wrong in ("deepseek,openai", "groq,groq"):
-        with pytest.raises(ValidationError):
-            Settings.model_validate({"database_url": "postgresql+psycopg://x",
-                                     "ai_provider_order": wrong})  # fmt: skip
+    # A typo or a repeat drops that name, with a warning, but never stops the API: a failed
+    # deploy's rollback would read the same setting.
+    for wrong, used in (("deepseek,openai", ["deepseek"]), ("groq,groq", ["groq"]),
+                        ("dipseek", [])):  # fmt: skip
+        settings = Settings.model_validate({"database_url": "postgresql+psycopg://x",
+                                            "ai_provider_order": wrong})  # fmt: skip
+        assert settings.ai_providers == used
 
 
 def test_gemini_answers_through_its_openai_endpoint():

@@ -4,6 +4,7 @@ Required values have no defaults: a missing one stops the process at startup
 instead of surfacing later as a runtime error against a placeholder.
 """
 
+import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
@@ -65,13 +66,17 @@ class Settings(BaseSettings):
     @field_validator("ai_provider_order")
     @classmethod
     def _known_providers(cls, value: str) -> str:
+        """The known names, in order, once each. Unlike other settings, a mistake here doesn't
+        stop the API: a failed deploy rolls back to the previous image with the same settings,
+        so a typo would take lookups down with it. It drops that name and logs a warning."""
         names = [name.strip().lower() for name in value.split(",") if name.strip()]
-        unknown = sorted(set(names) - set(AI_PROVIDERS))
-        if unknown:
-            raise ValueError(f"AI_PROVIDER_ORDER names {unknown}; known: {', '.join(AI_PROVIDERS)}")
-        if len(names) != len(set(names)):
-            raise ValueError("AI_PROVIDER_ORDER names a provider twice")
-        return ",".join(names)
+        kept = list(dict.fromkeys(name for name in names if name in AI_PROVIDERS))
+        if kept != names:
+            logging.getLogger(__name__).warning(
+                "AI_PROVIDER_ORDER %r: using %r; known providers: %s",
+                value, ",".join(kept), ", ".join(AI_PROVIDERS),
+            )  # fmt: skip
+        return ",".join(kept)
 
     @property
     def ai_providers(self) -> list[str]:

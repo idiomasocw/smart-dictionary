@@ -237,7 +237,7 @@ cat current-image
 ```
 
 **Secrets and AI keys.** Each deploy copies every parameter under `/smart-dictionary/prod/app/` into the API's environment. The AI features read `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY` and `GROQ_API_KEY` from there; today that's the missing-word entries (design §6.5).
-- **The order:** DeepSeek first, then Claude (Anthropic), Gemini and Groq, each tried when the one before fails. The fastest go first: these answers are stand-ins, and the routine writes the real entries. To change the order, store `AI_PROVIDER_ORDER` (for example `anthropic,deepseek,gemini,groq`) and deploy; a provider left out of it isn't used.
+- **The order:** DeepSeek first, then Claude (Anthropic), Gemini and Groq, each tried when the one before fails. The fastest go first: these answers are stand-ins, and the routine writes the real entries. To change the order, see "The AI providers' order" below.
 - **Each provider is optional.** One without a key is skipped, and with no key at all a missing word just isn't generated; lookups never depend on AI.
 - **Any one key is enough to start;** the others take over when the one before fails. Once the month's $5 is spent, every paid provider is skipped and only Groq's free tier answers.
 - **The cap is `AI_MONTHLY_BUDGET_USD`,** 5 by default; store that parameter only to change it.
@@ -256,6 +256,30 @@ Add `--overwrite` to change an existing value. This lists what's stored, names o
 
 ```bash
 MSYS_NO_PATHCONV=1 aws ssm get-parameters-by-path --region us-east-2 --path /smart-dictionary/prod --recursive --query "Parameters[].Name"
+```
+
+**The AI providers' order.** One setting decides it: `AI_PROVIDER_ORDER`, a comma-separated list of `deepseek`, `anthropic` (Claude), `gemini` and `groq`, first tried first.
+- **When it isn't stored,** the built-in order applies: `deepseek,anthropic,gemini,groq`.
+- **A provider runs only when it's in the list and its key is stored.** One left out isn't used, even with a key.
+- **A misspelled or repeated name is ignored,** with a warning in the API's log; it never stops the API.
+- **Changes apply at the next deploy,** like every parameter here.
+
+See the order (on your PC). If it says `ParameterNotFound`, nothing is stored and the built-in order applies:
+
+```bash
+MSYS_NO_PATHCONV=1 aws ssm get-parameter --region us-east-2 --name /smart-dictionary/prod/app/AI_PROVIDER_ORDER --query Parameter.Value --output text
+```
+
+Set it the first time, then deploy. It isn't a secret, so its type is `String`:
+
+```bash
+MSYS_NO_PATHCONV=1 aws ssm put-parameter --region us-east-2 --type String --name /smart-dictionary/prod/app/AI_PROVIDER_ORDER --value "anthropic,deepseek,gemini,groq"
+```
+
+Change it later with the same command plus `--overwrite`, then deploy. To go back to the built-in order, delete it, then deploy:
+
+```bash
+MSYS_NO_PATHCONV=1 aws ssm delete-parameter --region us-east-2 --name /smart-dictionary/prod/app/AI_PROVIDER_ORDER
 ```
 
 **A new database password for the API.** The old password stops working at once, so deploy right after:
