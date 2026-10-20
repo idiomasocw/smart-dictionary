@@ -16,6 +16,8 @@ from smart_dictionary.paths import DATA_DIR
 DATABASE_SCHEME = "postgresql+psycopg://"
 
 L1Variety = Literal["es-419", "pt-BR", "ar"]
+# The request-time AI providers, by the names llm_calls logs (ai.providers).
+AI_PROVIDERS = ("deepseek", "anthropic", "gemini", "groq")
 
 
 class Settings(BaseSettings):
@@ -37,6 +39,10 @@ class Settings(BaseSettings):
     deepseek_api_key: SecretStr | None = None
     gemini_api_key: SecretStr | None = None
     groq_api_key: SecretStr | None = None
+    # The order the gateway tries them in, comma-separated; a provider left out isn't used.
+    # Speed first: a provisional entry is a stand-in the routine rewrites, and DeepSeek
+    # answers fastest in the owner's experience (owner's choice, 2026-10-20).
+    ai_provider_order: str = ",".join(AI_PROVIDERS)
     # The monthly cap on paid providers [OP-2]: an alert at 80%, and at 100% only the free
     # provider answers until the month rolls over.
     ai_monthly_budget_usd: float = Field(default=5.0, ge=0)
@@ -55,6 +61,21 @@ class Settings(BaseSettings):
         if not value.startswith(DATABASE_SCHEME):
             raise ValueError(f"DATABASE_URL must start with {DATABASE_SCHEME}")
         return value
+
+    @field_validator("ai_provider_order")
+    @classmethod
+    def _known_providers(cls, value: str) -> str:
+        names = [name.strip().lower() for name in value.split(",") if name.strip()]
+        unknown = sorted(set(names) - set(AI_PROVIDERS))
+        if unknown:
+            raise ValueError(f"AI_PROVIDER_ORDER names {unknown}; known: {', '.join(AI_PROVIDERS)}")
+        if len(names) != len(set(names)):
+            raise ValueError("AI_PROVIDER_ORDER names a provider twice")
+        return ",".join(names)
+
+    @property
+    def ai_providers(self) -> list[str]:
+        return self.ai_provider_order.split(",") if self.ai_provider_order else []
 
     @model_validator(mode="after")
     def _production_needs_the_proxy_secret(self) -> Self:

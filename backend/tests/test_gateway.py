@@ -7,7 +7,7 @@ from typing import Any
 import anthropic
 import httpx2
 import pytest
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 
 from smart_dictionary.ai.gateway import Breaker, Gateway, Task, Unavailable, cost
 from smart_dictionary.ai.providers import (
@@ -19,7 +19,7 @@ from smart_dictionary.ai.providers import (
     api_schema,
     chain,
 )
-from smart_dictionary.core.settings import get_settings
+from smart_dictionary.core.settings import Settings, get_settings
 from smart_dictionary.db.sync import connect
 
 
@@ -211,13 +211,30 @@ def test_claude_reads_the_structured_answer_and_maps_failures():
         assert (raised.value.failure, raised.value.retry) == (failure, retry)
 
 
-def test_gemini_answers_after_deepseek_through_its_openai_endpoint():
-    names = ("anthropic_api_key", "deepseek_api_key", "gemini_api_key", "groq_api_key")
-    keys = {name: SecretStr(name) for name in names}
-    providers = chain(get_settings().model_copy(update=keys))
+KEYS = {name: SecretStr(name) for name in
+        ("anthropic_api_key", "deepseek_api_key", "gemini_api_key", "groq_api_key")}  # fmt: skip
+
+
+def test_the_providers_answer_in_the_order_the_owner_set():
+    # Fastest first by default: DeepSeek leads, and Groq's free tier stays last.
+    providers = chain(get_settings().model_copy(update=KEYS))
     assert [(provider.name, provider.paid) for provider in providers] == [
-        ("anthropic", True), ("deepseek", True), ("gemini", True), ("groq", False),
+        ("deepseek", True), ("anthropic", True), ("gemini", True), ("groq", False),
     ]  # fmt: skip
+    # Reordered, and a provider left out isn't used, though it has a key.
+    settings = Settings.model_validate({"database_url": "postgresql+psycopg://x",
+                                        "ai_provider_order": " Groq, gemini "})  # fmt: skip
+    assert settings.ai_providers == ["groq", "gemini"]
+    reordered = get_settings().model_copy(update={**KEYS, "ai_provider_order": "groq,gemini"})
+    assert [provider.name for provider in chain(reordered)] == ["groq", "gemini"]
+    for wrong in ("deepseek,openai", "groq,groq"):
+        with pytest.raises(ValidationError):
+            Settings.model_validate({"database_url": "postgresql+psycopg://x",
+                                     "ai_provider_order": wrong})  # fmt: skip
+
+
+def test_gemini_answers_through_its_openai_endpoint():
+    providers = chain(get_settings().model_copy(update=KEYS))
     gemini = providers[2]
     assert isinstance(gemini, OpenAICompatible)
 

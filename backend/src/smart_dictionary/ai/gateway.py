@@ -1,7 +1,7 @@
 """The AI gateway (design §7, ADR-009): the one way request-time AI reaches a model.
 
-- **Providers in order:** Claude Haiku, then DeepSeek, Gemini and Groq, each skipped without a
-  key.
+- **Providers in order** (AI_PROVIDER_ORDER): DeepSeek, then Claude Haiku, Gemini and Groq by
+  default, each skipped without a key.
 - **Retries:** one more try after a 429 or 5xx. A timeout, a refusal or an answer that fails
   validation moves on to the next provider.
 - **A circuit breaker per provider:** 5 failures in a minute keep it out for 2 minutes.

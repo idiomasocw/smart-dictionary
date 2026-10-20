@@ -237,9 +237,9 @@ cat current-image
 ```
 
 **Secrets and AI keys.** Each deploy copies every parameter under `/smart-dictionary/prod/app/` into the API's environment. The AI features read `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY` and `GROQ_API_KEY` from there; today that's the missing-word entries (design §6.5).
-- **The order:** Claude (Anthropic) first, then DeepSeek, Gemini and Groq, each tried when the one before fails.
+- **The order:** DeepSeek first, then Claude (Anthropic), Gemini and Groq, each tried when the one before fails. The fastest go first: these answers are stand-ins, and the routine writes the real entries. To change the order, store `AI_PROVIDER_ORDER` (for example `anthropic,deepseek,gemini,groq`) and deploy; a provider left out of it isn't used.
 - **Each provider is optional.** One without a key is skipped, and with no key at all a missing word just isn't generated; lookups never depend on AI.
-- **Anthropic alone is enough to start.** DeepSeek and Gemini take over when Claude is down. Once the month's $5 is spent, every paid provider is skipped and only Groq's free tier answers.
+- **Any one key is enough to start;** the others take over when the one before fails. Once the month's $5 is spent, every paid provider is skipped and only Groq's free tier answers.
 - **The cap is `AI_MONTHLY_BUDGET_USD`,** 5 by default; store that parameter only to change it.
 
 Store each key like this, then deploy. For DeepSeek or Groq, change the name the same way:

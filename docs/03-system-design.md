@@ -22,7 +22,7 @@
  AWS us-east-2 · EC2 t4g.medium · Docker Compose              Supabase project (us-east-2, dedicated)
    caddy ─▶ api (FastAPI) ───────────────────────────────────▶ Postgres + pgvector, pg_trgm, unaccent,
                │  spaCy + embedder                              fuzzystrmatch · Data API off
-               │  AI gateway ──▶ Haiku 5.5 → DeepSeek → Gemini → Groq (free) ▲
+               │  AI gateway ──▶ DeepSeek → Haiku 5.5 → Gemini → Groq (free) ▲
                │  lms-adapter ──▶ LMS /internal/dictionary/learners (L1, level, role)
                │                                                              │
                └── jobs (Procrastinate) ──▶ worker: publish · embeddings · TTS · spot checks · seeds
@@ -73,7 +73,7 @@ Each decision gets a short ADR file in `docs/adr/` when we implement it.
 | 006 | Procrastinate job queue, no Redis | Jobs enqueue in the same transaction as the data; one service fewer |
 | 007 | spaCy in-process, no NLP microservice | Used for sentences only; single words resolve through form tables |
 | 008 | Content generated through Claude Code routines only | Your decision (§16.1); the Batch API stays as an escape hatch |
-| 009 | AI gateway: Haiku 5.5 → DeepSeek → Gemini → Groq free, with a $5 cap | Resilience and cost control |
+| 009 | AI gateway: DeepSeek → Haiku 5.5 → Gemini → Groq free, with a $5 cap | Resilience and cost control |
 | 010 | No Gemini | Its API terms exclude services likely to be used by minors, and students may be 16+ |
 | 011 | Target BBB 4.0 / plugin SDK 1.0 | You're upgrading now |
 | 012 | Identity via nginx `auth_request` on the BBB server | No secrets in the browser; validated in the spike |
@@ -797,7 +797,7 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
    - not on the blocklist;
    - within the student's quota (10 provisional entries/day).
 2. **Dedupe:** an advisory lock on `hash(q_norm)` plus the `misses` row, so concurrent students trigger only one generation.
-3. **Generate:** the gateway task `provisional_entry` (Haiku → DeepSeek → Gemini → Groq) returns 1–2 senses, one example each and the es-419 layer, as structured output.
+3. **Generate:** the gateway task `provisional_entry` (DeepSeek → Haiku → Gemini → Groq) returns 1–2 senses, one example each and the es-419 layer, as structured output.
 4. **Validate** with V1–V5, V10 and V11, then **publish** with status `provisional` and top priority. The next routine run leases it, and the final entry replaces it under the same key.
 
 **Built (`backend/src/smart_dictionary/ai/provisional.py`):**
@@ -911,12 +911,15 @@ Every prompt is grounded in the published card (definition, L1 gloss, examples),
 ### 7.2 Provider chain and resilience
 
 ```
-Claude Haiku 5.5 (Messages API, structured output)
-   └─ on timeout (4 s) / 429 / 5xx / invalid output → DeepSeek (OpenAI-compatible, JSON mode, 6 s)
-        └─ on failure → Gemini 3.5 Flash-Lite (OpenAI-compatible, JSON mode, 6 s)
-             └─ on failure → Groq free tier (gpt-oss-120b, JSON mode, 6 s)
+DeepSeek (OpenAI-compatible, JSON mode, 8 s)
+   └─ on timeout / 429 / 5xx / invalid output → Claude Haiku 5.5 (Messages API, structured output, 8 s)
+        └─ on failure → Gemini 3.5 Flash-Lite (OpenAI-compatible, JSON mode, 8 s)
+             └─ on failure → Groq free tier (gpt-oss-120b, JSON mode, 8 s)
                   └─ on failure → fail soft: "AI help is busy, try again in a minute" (lookup is unaffected)
 ```
+
+- **Fastest first** (the owner's choice, 2026-10-20). Request-time answers are stand-ins and short helps; the quality comes from the routine, which writes every entry with Opus 5.5. DeepSeek leads because it answers fastest in the owner's experience. Claude Haiku first was the original plan.
+- **The order is a setting,** `AI_PROVIDER_ORDER` (default `deepseek,anthropic,gemini,groq`), so reordering after measuring needs no code change. A provider left out of it isn't used. `llm_calls` logs each call's `latency_ms` and outcome per provider, which is the measurement.
 
 - One retry per provider, on 429/5xx only.
 - A **circuit breaker** per provider opens after 5 failures in a minute and stays open for 2 minutes.
@@ -942,7 +945,7 @@ Claude Haiku 5.5 (Messages API, structured output)
 - **Gemini** is `gemini-3.5-flash-lite`: the newest Flash-Lite, stable, with no shutdown date announced (Google's pages, 2026-10-16).
   - Flash-Lite 3.1 costs a little less but may retire from May 2027. Flash 3.8 costs $0.75 / $3.75, doubling in January 2027.
   - Gemini 3 models always think. The gateway asks for low reasoning effort, and counts the thinking, which Google bills as output, from the usage total.
-- **Claude's timeout is 8 s, not 4.** A whole provisional entry takes longer than a sentence check, and the student isn't waiting on the call. Re-measure it with real traffic.
+- **Every provider's timeout is 8 s,** not the 4 and 6 s planned above. A whole provisional entry takes longer than a sentence check, and the student isn't waiting on the call. One limit for all also keeps the speed comparison fair. Re-measure it with real traffic.
 - **The schema sent** is the task's Pydantic schema, with every object closed and every property required (null when unused), and without the length limits structured outputs don't take. The gateway checks those limits when it validates the answer.
 - **Prices** are in `PRICES` (`ai/gateway.py`). Claude Haiku 5.5 costs $0.10 / $0.50 per million tokens (prompts up to 100K), and Gemini 3.5 Flash-Lite $0.30 / $2.50. A model missing from the table is priced as the dearest one, so a gap only makes the cap stricter.
 - **The cap** is `AI_MONTHLY_BUDGET_USD`, 5 by default. From 80% each call logs a warning; an alarm on that log line is still to do.

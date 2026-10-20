@@ -188,7 +188,9 @@ class OpenAICompatible:
     key: str = field(repr=False)
     model: str
     paid: bool
-    timeout: float = 6.0
+    # As long as Claude gets: a whole entry takes a few seconds, the student isn't waiting on
+    # the call, and llm_calls.latency_ms then compares the providers fairly.
+    timeout: float = 8.0
     # A reasoning model spends tokens before it answers, and they count toward max_tokens.
     token_factor: float = 1.0
     # Provider-specific request fields, such as Gemini's reasoning_effort.
@@ -238,23 +240,23 @@ class OpenAICompatible:
 
 
 def chain(settings: Settings) -> list[Provider]:
-    """The configured providers, in the order the gateway tries them."""
-    providers: list[Provider] = []
-    if settings.anthropic_api_key is not None:
-        providers.append(Claude(key=settings.anthropic_api_key.get_secret_value()))
+    """The providers with a key, in the order the gateway tries them (AI_PROVIDER_ORDER)."""
+    keyed: dict[str, Provider] = {}
     if settings.deepseek_api_key is not None:
         key = settings.deepseek_api_key.get_secret_value()
-        providers.append(OpenAICompatible("deepseek", DEEPSEEK_URL, key, "deepseek-chat", True))
+        keyed["deepseek"] = OpenAICompatible("deepseek", DEEPSEEK_URL, key, "deepseek-chat", True)
+    if settings.anthropic_api_key is not None:
+        keyed["anthropic"] = Claude(key=settings.anthropic_api_key.get_secret_value())
     if settings.gemini_api_key is not None:
         key = settings.gemini_api_key.get_secret_value()
         # Gemini 3 models always think; low effort keeps an entry fast and cheap, and the
         # factor leaves room in case the thinking counts toward max_tokens.
         gemini = OpenAICompatible("gemini", GEMINI_URL, key, GEMINI_MODEL, True, token_factor=3)
         gemini.extra["reasoning_effort"] = "low"
-        providers.append(gemini)
+        keyed["gemini"] = gemini
     if settings.groq_api_key is not None:
         key = settings.groq_api_key.get_secret_value()
-        providers.append(
-            OpenAICompatible("groq", GROQ_URL, key, "openai/gpt-oss-120b", False, token_factor=3)
+        keyed["groq"] = OpenAICompatible(
+            "groq", GROQ_URL, key, "openai/gpt-oss-120b", False, token_factor=3
         )
-    return providers
+    return [keyed[name] for name in settings.ai_providers if name in keyed]
