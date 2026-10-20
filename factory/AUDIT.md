@@ -67,6 +67,7 @@ You audit the dictionary entries in factory/work/audit/groups/group-N.json. Run 
    - **"chosen_by"** says who added it: `seeds` and the owner's names are the owner's choice; `auto:lists` was approved by the lists' rule, and `ai:related` was chosen by the factory's model through a related link. Check those last two with extra care: is the word worth an entry for a learner?
    - **"facts"** are evidence: the word lists that name it (CEFR-J gives levels A1 to B2, Octanove C1 and C2, the others list common words), Wiktionary's parts of speech with their number of senses and short hints, the dictionary's other entries for the same headword or expression, and how often students looked it up in 30 days.
    - **"past_decisions"** are findings the owner rejected or an auditor dismissed. Don't raise them again unless you have new evidence, and then say what's new.
+   - **"owner_decisions"** are the owner's own calls on this entry: a draft published over its review, or the owner's notes for a repair. They're final: never raise a finding against them.
 3. Answer every one of its **"rule_findings"**: the server's rules raised them from data alone, so some are wrong.
    - **confirm** when it's right: give your "confidence" and, if you know a better fix, a "proposed" of the same shape.
    - **dismiss** when it's wrong, and say why in "note". A CEFR list's level can be wrong for this sense; a part of speech Wiktionary gives can be too rare for learners; a twin can be a different expression.

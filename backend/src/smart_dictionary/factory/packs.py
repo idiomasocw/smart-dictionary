@@ -3,6 +3,11 @@
 Facts, not prose. Wiktionary's glosses are CC BY-SA, so a pack carries at most HINT_WORDS
 words of each, only to show which meanings exist; validator V9 keeps their wording out of
 entries. Packs are built for the whole batch with one query per source.
+
+A repair carries its notes and the version they judged (`repair.draft`): the draft the
+reviewer turned down, or the published document an audit or the owner asked to change. The
+writer starts from it, so what the notes didn't question survives. Notes from the owner start
+with "owner:" and win over a reviewer's or an audit's.
 """
 
 import re
@@ -126,9 +131,9 @@ def build(conn: psycopg.Connection, entry_ids: list[uuid.UUID]) -> list[Pack]:
             )
         )
         repairs = {
-            row["entry_id"]: row["qa"]
+            row["entry_id"]: {**row["qa"], "draft": row["doc"] or None}
             for row in cursor.execute(
-                "select distinct on (entry_id) entry_id, qa from entry_revisions"
+                "select distinct on (entry_id) entry_id, qa, doc from entry_revisions"
                 " where entry_id = any(%s) and outcome = 'needs_repair'"
                 " order by entry_id, created_at desc",
                 (entry_ids,),

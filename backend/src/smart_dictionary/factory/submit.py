@@ -129,11 +129,13 @@ def submit(
         results.append(
             Result(checked.key, checked.score, checked.errors, checked.warnings, outcome)
         )
-    _suggest(conn, published)
+    suggest_related(conn, published)
     return _close(conn, batch_id, results), results
 
 
-def _suggest(conn: psycopg.Connection, published: list[tuple[str, list[dict[str, Any]]]]) -> None:
+def suggest_related(
+    conn: psycopg.Connection, published: list[tuple[str, list[dict[str, Any]]]]
+) -> None:
     """The published entries' links to missing words, as suggestions; in a savepoint, so a
     failure here undoes only itself."""
     try:

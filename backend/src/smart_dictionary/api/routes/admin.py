@@ -5,7 +5,8 @@ state, decides word requests (design §6.7) and changes a few settings.
   can be added without it. The BBB proxy secret and factory tokens don't open it.
 - **What it never does:** name a student, show a secret, or create a token. It changes only
   the settings in core.tunables, the decision on a word request or an audit finding, and
-  single entries: add a word, retire one, requeue a quarantined one.
+  single entries: add a word, retire one, requeue a quarantined one, publish a draft over its
+  review, or send one to repair with the owner's notes.
 - **Every change and decision** is audited with the token's name and `X-Admin-Actor`, the
   LMS's person ID of whoever was signed in. The LMS vouches for that person; the token is
   what's checked.
@@ -219,7 +220,12 @@ class EntryDetail(EntryRow):
     sources: list[str]
     created_at: datetime
     lease_expires_at: datetime | None
-    doc: dict[str, Any] | None
+    doc: dict[str, Any] | None = Field(description="the published document students see")
+    draft: dict[str, Any] | None = Field(
+        description="the newest draft the server sent back (its review or checks turned it"
+        " down), when nothing was published after it: publish it, or send it to repair"
+    )
+    draft_at: datetime | None
     revisions: list[Revision]
 
 
@@ -352,6 +358,26 @@ class FindingResults(BaseModel):
 
 class FindingsRejected(BaseModel):
     rejected: int
+    undone: list[str] = Field(
+        description="entries whose repair at once was called off: published again as they were"
+    )
+    kept: list[str] = Field(
+        description="'<key>: why' for repairs at once that couldn't be called off any more"
+    )
+
+
+class OwnerNotes(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    notes: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        min_length=1,
+        max_length=20,
+        description="what to change, one problem per note; name the key when you can"
+        " (en:maximum:adj#1.ex2: …)",
+    )
+    replace: bool = Field(
+        default=False, description="drop the earlier notes (a reviewer's, an audit's)"
+    )
 
 
 class Confirmation(BaseModel):
@@ -494,6 +520,48 @@ def entry_retire(
         raise ApiError(409, "conflict", "Can't retire it", str(error)) from None
     audit.record(conn, client, actor, "entry.retire", key, {"status": before},
                  {"status": "retired", "note": body.note})  # fmt: skip
+    conn.commit()
+    return _entry_detail(conn, key)
+
+
+@router.post("/entries/{key}/publish")
+def entry_publish(
+    conn: SyncConnection, client: AdminClient, key: str, body: EntryAction, actor: Actor = None
+) -> EntryDetail:
+    """Publish the draft the factory's reviewer turned down: you overrule the review. The
+    server's checks still apply, so a draft with an error answers 422 with each one."""
+    decided_by = audit.decided_by(client, actor)
+    try:
+        before = curation.publish_draft(conn, key, decided_by=decided_by, note=body.note)
+    except LookupError:
+        raise ApiError(404, "not_found", "No such entry") from None
+    except word_requests.Conflict as error:
+        raise ApiError(409, "conflict", "Can't publish it", str(error)) from None
+    except curation.Failing as failing:
+        raise ApiError(422, "fails_checks", "The draft fails the server's checks",
+                       "; ".join(failing.problems)) from None  # fmt: skip
+    audit.record(conn, client, actor, "entry.publish", key, {"status": before},
+                 {"status": "published", "overruled": "review", "note": body.note})  # fmt: skip
+    conn.commit()
+    return _entry_detail(conn, key)
+
+
+@router.post("/entries/{key}/repair")
+def entry_repair(
+    conn: SyncConnection, client: AdminClient, key: str, body: OwnerNotes, actor: Actor = None
+) -> EntryDetail:
+    """Send the entry to the factory with your notes, which win over a reviewer's and an
+    audit's. It works on a published entry (it stays shown until the rewrite publishes), on a
+    draft that was sent back, and on a word nobody has written yet."""
+    try:
+        before = curation.send_to_repair(conn, key, notes=body.notes, replace=body.replace,
+                                         decided_by=audit.decided_by(client, actor))  # fmt: skip
+    except LookupError:
+        raise ApiError(404, "not_found", "No such entry") from None
+    except word_requests.Conflict as error:
+        raise ApiError(409, "conflict", "Can't send it to repair", str(error)) from None
+    after = {"status": "needs_repair", "notes": body.notes, "replace": body.replace}
+    audit.record(conn, client, actor, "entry.repair", key, {"status": before}, after)
     conn.commit()
     return _entry_detail(conn, key)
 
@@ -668,13 +736,14 @@ def findings_reject(
 ) -> FindingsRejected:
     """Close findings you disagree with: nothing changes, and the rules won't raise them
     again."""
-    count = auditing.reject(conn, body.ids, decided_by=audit.decided_by(client, actor),
+    found = auditing.reject(conn, body.ids, decided_by=audit.decided_by(client, actor),
                             note=body.note)  # fmt: skip
-    if count:
-        audit.record(conn, client, actor, "finding.reject", f"{count} findings", None,
-                     {"ids": [str(i) for i in body.ids], "note": body.note})  # fmt: skip
+    if found.count:
+        audit.record(conn, client, actor, "finding.reject", f"{found.count} findings", None,
+                     {"ids": [str(i) for i in body.ids], "note": body.note,
+                      "repairs_called_off": found.undone})  # fmt: skip
     conn.commit()
-    return FindingsRejected(rejected=count)
+    return FindingsRejected(rejected=found.count, undone=found.undone, kept=found.kept)
 
 
 @router.get("/settings")

@@ -227,7 +227,7 @@ def test_the_owner_applies_or_rejects_the_rest_and_sees_how_far_to_trust_each_ty
         }  # fmt: skip
         rejected = client.post("/v1/admin/findings/reject", headers=owner,
                                json={"ids": [by_type["example"]["id"]]}).json()  # fmt: skip
-        assert rejected == {"rejected": 1}
+        assert rejected == {"rejected": 1, "undone": [], "kept": []}
         twice = client.post("/v1/admin/findings/apply", headers=owner,
                             json={"ids": [by_type["duplicate"]["id"]]}).json()  # fmt: skip
         assert twice["results"][0]["outcome"] == "skipped"
@@ -304,3 +304,46 @@ def test_an_audit_runs_end_to_end_through_the_scripts(
     assert "audited 1, findings 1, applied at once 0" in printed
     assert row("select model, audit_version like 'audit-%%' from audit_batches"
                " where status = 'submitted'") == ("test-model", True)  # fmt: skip
+
+
+def test_rejecting_a_fix_applied_at_once_calls_its_repair_off(
+    migrated_database_url, anyio_backend_options
+):
+    audit_world()
+    auth = bearer("audit")
+    with TestClient(create_app(), backend_options=anyio_backend_options) as client:
+        batch = leased(client, auth)
+        go = next(item for item in batch["items"] if item["key"] == "en:go:v")
+        confirm = {"id": rule(go, "cefr")["id"], "verdict": "confirm", "confidence": "high"}
+        answer = {"key": "en:go:v", "rules": [confirm]}
+        client.post(f"/v1/audit/batches/{batch['batch_id']}/results", headers=auth,
+                    json={"audit_version": VERSION, "entries": [answer]})  # fmt: skip
+        assert row("select status::text from entries where key = 'en:go:v'") == ("needs_repair",)
+
+        owner = admin()
+        applied = client.get("/v1/admin/findings", params={"status": "applied"}, headers=owner)
+        [fix] = applied.json()["items"]
+        assert fix["decided_by"] == "auto:audit"
+        undo = client.post("/v1/admin/findings/reject", headers=owner,
+                           json={"ids": [fix["id"]], "note": "A1 is right for go"})  # fmt: skip
+        assert undo.json() == {"rejected": 1, "undone": ["en:go:v"], "kept": []}
+        assert row("select status::text from entries where key = 'en:go:v'") == ("published",)
+        assert row("select status, note from audit_findings where type = 'cefr'") == (
+            "rejected", "A1 is right for go",
+        )  # fmt: skip
+
+        # Once the factory is rewriting it, the repair can't be called off.
+        with connect() as conn:
+            conn.execute(
+                "insert into audit_findings (entry_id, entry_key, target_key, type, source,"
+                " confidence, problem, status, decided_by) select id, key, key, 'example', 'ai',"
+                " 'high', 'x', 'applied', 'auto:audit' from entries where key = 'en:go:v'"
+            )
+            conn.execute("update entries set status = 'generating' where key = 'en:go:v'")
+            [late] = [found[0] for found in conn.execute(
+                "select id from audit_findings where status = 'applied'")]  # fmt: skip
+        kept = client.post("/v1/admin/findings/reject", headers=owner,
+                           json={"ids": [str(late)]}).json()  # fmt: skip
+        assert kept["undone"] == [] and kept["kept"][0].startswith(
+            "en:go:v: the routine is rewriting it now"
+        )

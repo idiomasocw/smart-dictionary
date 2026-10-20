@@ -86,6 +86,18 @@ def letters(conn: psycopg.Connection, status: str | None) -> list[dict[str, Any]
     return [{"letter": letter, "count": counts.get(letter, 0)} for letter in LETTERS]
 
 
+# The newest draft the routine submitted and the server sent back, when nothing was published
+# after it: what the reviewer or the checks turned down, for the owner to judge.
+DRAFT = """
+select r.doc, r.created_at from entry_revisions r
+where r.entry_id = %s and r.outcome in ('needs_repair', 'quarantined')
+  and r.produced_by->>'source' = 'routine'
+  and not exists (select from entry_revisions p where p.entry_id = r.entry_id
+                  and p.outcome = 'published' and p.created_at > r.created_at)
+order by r.created_at desc limit 1
+"""
+
+
 def entry(conn: psycopg.Connection, key: str) -> dict[str, Any] | None:
     """One entry with its document and its latest revisions, newest first."""
     with conn.cursor(row_factory=dict_row) as cursor:
@@ -101,6 +113,9 @@ def entry(conn: psycopg.Connection, key: str) -> dict[str, Any] | None:
             " where entry_id = %s order by created_at desc limit 20",
             (found["id"],),
         ).fetchall()
+        draft = cursor.execute(DRAFT, (found["id"],)).fetchone()
+    found["draft"] = draft["doc"] if draft else None
+    found["draft_at"] = draft["created_at"] if draft else None
     found = _with_problems(found)
     found["revisions"] = [
         revision

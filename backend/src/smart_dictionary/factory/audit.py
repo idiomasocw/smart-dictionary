@@ -22,6 +22,10 @@ decides what it finds.
   word to remove is retired.
 - **Trust, verified:** with `audit_auto_repair` on (the default), a high-confidence content
   fix is applied at once (`auto:audit`); everything else waits for the owner, who sees both.
+  Rejecting one applied at once calls its repair off while the factory hasn't started it.
+- **The owner has the last word:** each item carries the owner's decisions on its entry (a
+  draft published over its review, the owner's repair notes), and the auditor never raises a
+  finding against them.
 """
 
 import uuid
@@ -188,6 +192,11 @@ def packs(conn: psycopg.Connection, entry_ids: list[uuid.UUID]) -> list[dict[str
             " and created_at > now() - interval '30 days' group by 1",
             ([entry["key"] for entry in entries],),
         ).fetchall())  # fmt: skip
+        owner = _grouped(cursor.execute(
+            "select entry_id::text as word, created_at, qa->'owner' as decision"
+            " from entry_revisions where entry_id = any(%s)"
+            " and produced_by->>'source' = 'owner' order by created_at desc", (entry_ids,)
+        ))  # fmt: skip
         linked = _grouped(cursor.execute(
             "select r.entry_key as word, l.entry_key || ' ' || l.type as link"
             " from word_requests r join word_request_links l on l.request_id = r.id"
@@ -221,6 +230,10 @@ def packs(conn: psycopg.Connection, entry_ids: list[uuid.UUID]) -> list[dict[str
                 {k: row[k] for k in ("type", "target_key", "problem", "status", "note")}
                 for row in past.get(str(entry["id"]), [])
             ][:10],
+            "owner_decisions": [
+                {"at": row["created_at"].isoformat(), **(row["decision"] or {})}
+                for row in owner.get(str(entry["id"]), [])
+            ][:5],
             "rule_findings": _rules(entry, context),
         })  # fmt: skip
     return items
@@ -665,15 +678,71 @@ def apply(
     return results
 
 
+@dataclass(frozen=True)
+class Rejected:
+    count: int
+    undone: list[str]  # entries whose repair at once was called off
+    kept: list[str]  # "<key>: why" for repairs at once that couldn't be called off
+
+
 def reject(
     conn: psycopg.Connection, finding_ids: list[uuid.UUID], *, decided_by: str, note: str | None
-) -> int:
-    """The owner disagrees: the findings close, and the rules never raise them again."""
-    return conn.execute(
+) -> Rejected:
+    """The owner disagrees: the findings close, and the rules never raise them again. A
+    finding applied at once (`auto:audit`) is rejected too, and its repair is called off while
+    the factory hasn't started it: the entry is published again as it was."""
+    count = conn.execute(
         "update audit_findings set status = 'rejected', decided_at = now(), decided_by = %s,"
         " note = coalesce(%s, note) where id = any(%s) and status = 'open'",
         (decided_by, note, finding_ids),
     ).rowcount
+    with conn.cursor(row_factory=dict_row) as cursor:
+        applied = cursor.execute(
+            "select f.id, f.entry_id, e.key, e.status::text as status from audit_findings f"
+            " join entries e on e.id = f.entry_id where f.id = any(%s) and f.status = 'applied'"
+            " and f.decided_by = %s order by e.key for update of f",
+            (finding_ids, AUTO_BY),
+        ).fetchall()
+    by_entry: dict[uuid.UUID, list[dict[str, Any]]] = defaultdict(list)
+    for row in applied:
+        by_entry[row["entry_id"]].append(row)
+    undone: list[str] = []
+    kept: list[str] = []
+    for entry_id, rows in by_entry.items():
+        key, ids = rows[0]["key"], [row["id"] for row in rows]
+        why = _cannot_undo(conn, entry_id, rows[0]["status"], {str(i) for i in ids})
+        if why:
+            kept.append(f"{key}: {why}")
+            continue
+        conn.execute(
+            "update entries set status = 'published', updated_at = now() where id = %s",
+            (entry_id,),
+        )
+        _decided(conn, ids, "rejected", decided_by, note)
+        count += len(ids)
+        undone.append(key)
+    return Rejected(count, undone, kept)
+
+
+def _cannot_undo(
+    conn: psycopg.Connection, entry_id: uuid.UUID, status: str, ids: set[str]
+) -> str | None:
+    """Why a repair at once can't be called off, or None: the factory is on it or has
+    rewritten the entry, or the repair carries other notes too."""
+    if status == "generating":
+        return "the routine is rewriting it now; send it to repair with your notes after its run"
+    latest = conn.execute(
+        "select produced_by->>'source', qa from entry_revisions where entry_id = %s"
+        " order by created_at desc limit 1",
+        (entry_id,),
+    ).fetchone()
+    if status != "needs_repair" or latest is None or latest[0] != "audit":
+        return "rewritten already; send it to repair with your notes if the rewrite is wrong"
+    qa = latest[1] or {}
+    carried = {note.get("finding") for note in qa.get("audit") or []}
+    if not carried <= ids or len((qa.get("review") or {}).get("notes") or []) != len(carried):
+        return "its repair carries other notes too; send it to repair with your notes instead"
+    return None
 
 
 def _change(

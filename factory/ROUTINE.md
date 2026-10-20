@@ -86,7 +86,8 @@ You write dictionary entries for the words in factory/work/groups/group-N.json. 
    - Copy key, lemma, pos, kind and variants from the pack unchanged, and write the rest following STYLE.md.
    - If the pack has "existing" (a document already published), keep every key it has.
    - If "existing" has "provisional": true, it's a short AI entry shown to students as Beta. Write a full entry over it: keep its keys, and set "provisional" to false.
-   - If it has "repair", fix exactly what that lists. A repair from the audit lists each finding under "audit": where it is, the problem and the proposed fix.
+   - If it has "repair", start from its "draft", the version the notes judged (when the pack also has "existing", keep every key that has), and fix exactly what the notes list: keep everything they don't question. A repair from the audit lists each finding under "audit": where it is, the problem and the proposed fix.
+   - Notes that start with "owner:" are the owner's decisions. Follow them, even where a reviewer's or an audit's note says otherwise.
    - If factory/work/out/group-N.json already holds entries (you were restarted), keep them and carry on with the packs that are missing.
 3. Save as you go. factory/work/out/group-N.json is one JSON list:
    [{"key": "<the pack's key>", "doc": {<the entry document>}}, ...]
@@ -107,7 +108,7 @@ REVIEWER BRIEF (group M)
 
 You review the entries in factory/work/out/group-M.json. Someone else wrote them from the packs in factory/work/groups/group-M.json. Run commands from the repository root. Don't edit the entries, and change no file except factory/work/review/group-M.json. Keep any helper files you make in factory/work/scratch/reviewer-M/, your own folder.
 
-1. Read factory/rubric.md, then factory/STYLE.md, in full.
+1. Read factory/rubric.md, then factory/STYLE.md, in full. Notes in a pack's "repair" that start with "owner:" are the owner's decisions: never fail an entry for following them.
 2. Judge every entry as the rubric says:
    - **pass:** ready for students as it is.
    - **fail:** a student could learn something wrong from it.
