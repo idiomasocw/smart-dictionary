@@ -677,10 +677,13 @@ The audit's admin dashboard (§12 there) arrives as a console inside the LMS, wh
 - `GET /v1/admin/requests`, with `POST …/approve` and `…/reject`: the word-request queue (§6.7), students' requests and related words, each with its evidence and its `twins`. `to_verify=true` lists the words approved at once that the owner hasn't confirmed, and `POST /v1/admin/requests/confirm` keeps them (to undo one, retire its entry).
 - `GET /v1/admin/findings`, with `POST …/apply` and `…/reject`: the audit's findings (§6.6), open ones first, the most confident first.
 
-**What it does to single entries** (`admin/curation.py`), each audited (`entry.add`, `entry.retire`, `entry.requeue`):
+**What it does to single entries** (`admin/curation.py`), each audited (`entry.add`, `entry.retire`, `entry.requeue`, `entry.publish`, `entry.repair`):
 - **`POST /v1/admin/entries`** `{lemma, pos, kind, note?}`: add a word, queued and approved, first in the factory's queue. A pending request for it is approved with it. It refuses a key that exists, or another entry for the same multiword expression (§3.6).
 - **`POST /v1/admin/entries/{key}/retire`** `{note?}`: take a duplicate or an unwanted word out of the dictionary. Its key is kept forever, searches that pointed to it answer "not found", and students can't request it. Not while the routine is writing it.
 - **`POST /v1/admin/entries/{key}/requeue`** `{note?}`: give a quarantined entry another go once its cause is fixed. Its attempts reset, and it goes back to the queue, or to the Beta rewrites when it has a Beta.
+- **The owner has the last word over the AI** (2026-10-20). An entry's page shows the `draft` the server sent back (the routine's newest submission, when nothing was published after it), beside the published `doc`, so the owner can judge the reviewer's verdict.
+  - **`POST /v1/admin/entries/{key}/publish`** `{note?}`: publish that draft, overruling its review. The server's checks still apply: a draft with an error answers 422 with each one. A human can overrule an AI's judgment, not the checks that guard structure, originality and safety.
+  - **`POST /v1/admin/entries/{key}/repair`** `{notes, replace?}`: the owner's own critique. The entry goes to the factory with the owner's notes, prefixed `owner:` and placed before any other; `replace` drops the reviewer's and the audit's. It works on a published entry (shown until the rewrite publishes), a draft that was sent back, and a word nobody has written yet (the notes guide its first writing). The writer follows the owner's notes even over a reviewer's, the reviewer never fails an entry for following them, and the audit never raises a finding against them (`owner_decisions`, §6.6).
 
 It never names a student: AI use is counted per search, and the console sees how many students reached the daily cap, never which. A request shows how many students asked and what they searched, never who.
 
@@ -863,7 +866,7 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
   - each warning subtracts its weight (0.1, or 0.05 for V7 and 0.15 for V8);
   - the reviewer's verdict subtracts 0, 0.15 or 0.5 (pass, uncertain, fail);
   - τ is `FACTORY_PUBLISH_THRESHOLD`, 0.7 until the golden set calibrates it.
-- **Repairs:** a failing entry goes to `needs_repair` with its issues in the revision's `qa`, which the next pack carries. After 2 failed repairs it's quarantined. Every submission is a revision.
+- **Repairs:** a failing entry goes to `needs_repair` with its issues in the revision's `qa`, which the next pack carries with the draft they judged (`repair.draft`). The writer starts from that draft, so what the review didn't question survives: before 2026-10-20 a turned-down first draft reached the next writer as notes alone, and a note such as "keep ex2 and ex3" pointed at text the writer never saw. After 2 failed repairs it's quarantined. Every submission is a revision.
 - **`POST /v1/factory/validate`** runs the same checks without saving anything. The routine uses it while writing.
 - **Related links to missing words** become suggestions once their entry publishes (§6.7). That step runs in a savepoint: a failure there is logged and never holds the entry back.
 - **`POST /v1/factory/batches/{id}/entries`** reports each entry's outcome:
@@ -1001,6 +1004,8 @@ audits, golden set ───┘
   - **`kind`** retires the entry and adds it again under the right kind;
   - **`duplicate`** retires the twin it names, and **`remove`** retires the entry.
 - **Trust, verified.** With `audit_auto_repair` on (the default), a high-confidence content finding is applied when it's submitted (`auto:audit`). A checker sub-agent first re-reads every high-confidence answer and lowers the ones it doubts. Everything else waits for the owner in the console, who applies or rejects in bulk. For each type, the console shows how many findings the owner applied and rejected over 90 days (`your_decisions_90d`): when one type is nearly always applied, its findings can be trusted with more.
+- **Overruling the audit.** Rejecting an open finding closes it for good. Rejecting one applied at once calls its repair off while the factory hasn't started it: the entry is published again as it was (`undone`); once the factory is rewriting it, or has, the owner sends it to repair with notes instead (`kept` says why). The owner's own calls on an entry (a draft published over its review, repair notes) travel with each audit item as `owner_decisions`, and the auditor never raises a finding against them.
+- **What it audits.** Every approved entry, written or not: a written one for its content and facts, an unwritten one for its facts (a real learner word, the right part of speech and kind, no twin). It skips entries the factory is busy with (`generating`, Betas about to be replaced, `needs_repair`, `quarantined`): a draft in repair already has its notes, and the owner judges it on the entry's page.
 
 **Schema changes** (a later migration; the §3.4 sketch and revision 0001 predate them)
 - **Targets:** `target_key` is a sense, example or note key; `sense_key|variety|term` for an equivalent; `entry_key|ipa|variety` for a pronunciation; or, for a *missing meaning* report only, the entry key.

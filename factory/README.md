@@ -167,6 +167,8 @@ Once a trial works, edit the routine and set the `BATCH:` line back to `BATCH: 4
 
 **When `ROUTINE.md` changes in the repo,** paste it into the routine again: the form keeps its own copy. STYLE.md, the rubric, the schema and the scripts need nothing, because every run reads them from its fresh clone.
 
+**Repairs and your notes.** A repair pack carries the draft its notes judged (`repair.draft`), and the writer starts from it. Notes that start with `owner:` are yours, from the console's "Send to repair": the writer follows them first, and the reviewer never fails an entry for following them.
+
 ### Reading a run
 
 - **The run list's green status** only means the session started and ended without an infrastructure problem; a failed batch is green too. Open the run to read its report: the summary line, the time taken, and anything to look at.
