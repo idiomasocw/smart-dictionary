@@ -1,8 +1,9 @@
-"""Bearer tokens for API clients such as the factory routine (design §5.1, `api_clients`).
+"""Bearer tokens for API clients such as the factory routine and the LMS's admin console
+(design §5.1, `api_clients`).
 
 Only a SHA-256 digest is stored, so the database never holds a usable token; the token
 itself is shown once, when it's created. Tokens are long and random, so an unsalted digest
-is enough.
+is enough. Only the CLI creates them: the API's role can read `api_clients` but not write it.
 """
 
 import hashlib
@@ -14,8 +15,10 @@ import psycopg
 
 from smart_dictionary.core.ids import new_id
 
-# A recognizable prefix makes a leaked token easy to spot in logs and secret scanners.
+# A recognizable prefix makes a leaked token easy to spot in logs and secret scanners, and
+# tells at a glance whether it can change settings.
 PREFIX = "sdf_"
+ADMIN_PREFIX = "sda_"
 
 
 @dataclass(frozen=True)
@@ -32,7 +35,7 @@ def digest(token: str) -> bytes:
 
 def create(conn: psycopg.Connection, name: str, scopes: list[str], tenant: str = "ocw") -> str:
     """Register a client and return its token, which can't be recovered afterwards."""
-    token = PREFIX + secrets.token_urlsafe(32)
+    token = (ADMIN_PREFIX if "admin" in scopes else PREFIX) + secrets.token_urlsafe(32)
     conn.execute(
         "insert into api_clients (id, tenant_id, name, scopes, token_hash)"
         " values (%s, %s, %s, %s, %s)",
@@ -41,11 +44,12 @@ def create(conn: psycopg.Connection, name: str, scopes: list[str], tenant: str =
     return token
 
 
-def revoke(conn: psycopg.Connection, name: str) -> int:
-    """Revoke every active token with this name; returns how many."""
+def revoke(conn: psycopg.Connection, name: str, scope: str) -> int:
+    """Revoke every active token with this name and scope; returns how many."""
     cursor = conn.execute(
-        "update api_clients set revoked_at = now() where name = %s and revoked_at is null",
-        (name,),
+        "update api_clients set revoked_at = now()"
+        " where name = %s and %s = any(scopes) and revoked_at is null",
+        (name, scope),
     )
     return cursor.rowcount
 

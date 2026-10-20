@@ -3,6 +3,7 @@
 Reads only. Entries are counted by status; the recent batches show each run's outcome.
 """
 
+from dataclasses import dataclass
 from datetime import datetime
 
 import psycopg
@@ -45,22 +46,16 @@ def report(conn: psycopg.Connection, runs: int = 10) -> list[str]:
             f"At that pace, the {waiting:,} waiting take about {waiting / published_today:.0f} days"
         )
 
-    batches = conn.execute(
-        "select run_label, leased_at, submitted_at, status, cardinality(entry_ids), results,"
-        " status = 'leased' and leased_at + %s < now()"
-        " from factory_batches order by leased_at desc limit %s",
-        (LEASE, runs),
-    ).fetchall()
+    batches = recent_runs(conn, runs)
     if batches:
         lines += ["", "Recent runs (UTC):"]
-    for label, leased_at, submitted_at, status, words, results, overdue in batches:
-        state = "expired" if overdue else status
-        took = f" in {_minutes(leased_at, submitted_at)} min" if submitted_at else ""
-        outcomes = ", ".join(f"{name} {count}" for name, count in sorted((results or {}).items()))
+    for run in batches:
+        took = f" in {run.minutes} min" if run.minutes is not None else ""
+        outcomes = ", ".join(f"{name} {count}" for name, count in sorted(run.results.items()))
         lines.append(
-            f"  {leased_at:%Y-%m-%d %H:%M}  {state:<9} {words:>3} words{took}"
+            f"  {run.leased_at:%Y-%m-%d %H:%M}  {run.state:<9} {run.words:>3} words{took}"
             + (f"  ({outcomes})" if outcomes else "")
-            + (f"  {label}" if label else "")
+            + (f"  {run.label}" if run.label else "")
         )
 
     # Missed searches whose AI attempts all failed, and that the factory couldn't take: no
@@ -74,6 +69,39 @@ def report(conn: psycopg.Connection, runs: int = 10) -> list[str]:
         lines += ["", f"Searches AI couldn't write and no seed covers ({len(stuck)}):"]
         lines += [f"  {query} ({language}): {error}" for language, query, error in stuck[:20]]
     return lines
+
+
+@dataclass(frozen=True)
+class Run:
+    label: str | None
+    leased_at: datetime
+    submitted_at: datetime | None
+    state: str  # leased, submitted, or expired: leased past its lease
+    words: int
+    minutes: int | None  # from lease to the last submission
+    results: dict[str, int]
+
+
+def recent_runs(conn: psycopg.Connection, limit: int) -> list[Run]:
+    """The latest batches, newest first, for this report and the admin API."""
+    rows = conn.execute(
+        "select run_label, leased_at, submitted_at, status, cardinality(entry_ids), results,"
+        " status = 'leased' and leased_at + %s < now()"
+        " from factory_batches order by leased_at desc limit %s",
+        (LEASE, limit),
+    ).fetchall()
+    return [
+        Run(
+            label=label,
+            leased_at=leased_at,
+            submitted_at=submitted_at,
+            state="expired" if overdue else status,
+            words=words,
+            minutes=_minutes(leased_at, submitted_at) if submitted_at else None,
+            results=results or {},
+        )
+        for label, leased_at, submitted_at, status, words, results, overdue in rows
+    ]
 
 
 def _minutes(start: datetime, end: datetime) -> int:

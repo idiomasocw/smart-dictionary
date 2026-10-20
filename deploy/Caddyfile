@@ -8,5 +8,14 @@
 		X-Content-Type-Options "nosniff"
 		-Server
 	}
+	# The admin API answers only from ADMIN_ALLOWED_IPS (SSM:
+	# /smart-dictionary/prod/caddy/ADMIN_ALLOWED_IPS), such as the LMS server's address,
+	# so a leaked admin token is useless elsewhere. Unset, every address may try, and the
+	# token alone guards it. Others get a plain 404, as if the routes weren't there.
+	@admin_elsewhere {
+		path /v1/admin /v1/admin/*
+		not remote_ip {$ADMIN_ALLOWED_IPS:0.0.0.0/0 ::/0}
+	}
+	respond @admin_elsewhere 404
 	reverse_proxy api:8000
 }

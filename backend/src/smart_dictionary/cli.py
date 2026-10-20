@@ -149,20 +149,29 @@ def _seeds_queue(
 
 def _factory(action: str, name: str | None, runs: int) -> None:
     from smart_dictionary.db.sync import connect
-    from smart_dictionary.factory import progress, tokens
+    from smart_dictionary.factory import progress
 
     if action == "status":
         with connect() as conn:
             print("\n".join(progress.report(conn, runs)))
         return
+    _token("factory", action, name)
+
+
+def _token(scope: str, action: str, name: str | None) -> None:
+    """Create a token with this scope and print it once, or revoke the ones with this name."""
+    from smart_dictionary.db.sync import connect
+    from smart_dictionary.factory import tokens
+
     if not name:
-        raise SystemExit(f"factory {action} needs --name")
+        raise SystemExit(f"{scope} {action} needs --name")
     with connect() as conn:
         if action == "revoke":
-            print(f"revoked {tokens.revoke(conn, name)} token(s) named {name!r}")
+            count = tokens.revoke(conn, name, scope)
+            print(f"revoked {count} {scope} token(s) named {name!r}")
             return
-        token = tokens.create(conn, name, ["factory"])
-    print(f"factory token {name!r}, shown only now:", file=sys.stderr)
+        token = tokens.create(conn, name, [scope])
+    print(f"{scope} token {name!r}, shown only now:", file=sys.stderr)
     print(token)
 
 
@@ -269,6 +278,10 @@ def main(argv: list[str] | None = None) -> None:
     factory.add_argument("--name", help="token and revoke: a label such as 'routine'")
     factory.add_argument("--runs", type=int, default=10, help="status: how many recent runs")
 
+    admin = commands.add_parser("admin", help="tokens for the admin API (the LMS's console)")
+    admin.add_argument("action", choices=["token", "revoke"])
+    admin.add_argument("--name", required=True, help="a label such as 'lms'")
+
     db = commands.add_parser("db", help="database administration")
     db.add_argument("action", choices=["app-role"], help="new password for the API's role")
     db.add_argument("--role", default="dictionary_app")
@@ -296,6 +309,8 @@ def main(argv: list[str] | None = None) -> None:
         _seeds(args.action, args.file, args.out)
     elif args.command == "factory":
         _factory(args.action, args.name, args.runs)
+    elif args.command == "admin":
+        _token("admin", args.action, args.name)
     elif args.command == "db":
         _db_app_role(args.role)
     elif args.command == "audio":

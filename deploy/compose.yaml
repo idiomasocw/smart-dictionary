@@ -2,7 +2,7 @@
 # deploy.sh runs this with IMAGE set and writes the env files from SSM Parameter Store:
 #   app.env      everything under /smart-dictionary/prod/app/      (the API's own secrets)
 #   migrate.env  everything under /smart-dictionary/prod/migrate/  (the owner's DATABASE_URL)
-#   caddy.env    everything under /smart-dictionary/prod/caddy/    (SITE_ADDRESS)
+#   caddy.env    everything under /smart-dictionary/prod/caddy/    (SITE_ADDRESS, ADMIN_ALLOWED_IPS)
 # The API never sees migrate.env, so it can't change the schema.
 
 name: smart-dictionary

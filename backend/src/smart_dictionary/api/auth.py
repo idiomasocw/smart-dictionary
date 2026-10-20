@@ -44,12 +44,27 @@ def factory_client(
     conn: SyncConnection, authorization: Annotated[str | None, Header()] = None
 ) -> tokens.Client:
     """The routine, identified by `Authorization: Bearer <token>` with the `factory` scope."""
-    scheme, _, token = (authorization or "").partition(" ")
-    token = token.strip()
-    client = tokens.find(conn, token, "factory") if scheme.lower() == "bearer" and token else None
-    if client is None:
-        raise ApiError(401, "unauthorized", "Missing or invalid factory token")
-    return client
+    return _bearer(conn, authorization, "factory")
 
 
 FactoryClient = Annotated[tokens.Client, Depends(factory_client)]
+
+
+def admin_client(
+    conn: SyncConnection, authorization: Annotated[str | None, Header()] = None
+) -> tokens.Client:
+    """The owner's console, identified by a bearer token with the `admin` scope. Neither the
+    proxy secret nor a factory token is enough."""
+    return _bearer(conn, authorization, "admin")
+
+
+AdminClient = Annotated[tokens.Client, Depends(admin_client)]
+
+
+def _bearer(conn: SyncConnection, authorization: str | None, scope: str) -> tokens.Client:
+    scheme, _, token = (authorization or "").partition(" ")
+    token = token.strip()
+    client = tokens.find(conn, token, scope) if scheme.lower() == "bearer" and token else None
+    if client is None:
+        raise ApiError(401, "unauthorized", f"Missing or invalid {scope} token")
+    return client

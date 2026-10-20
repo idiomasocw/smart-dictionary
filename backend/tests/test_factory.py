@@ -85,7 +85,8 @@ def test_factory_tokens_are_stored_hashed_and_scoped(migrated_database_url):
         assert tokens.find(conn, token + "x", "factory") is None
         stored = conn.execute("select token_hash from api_clients").fetchone()
         assert stored is not None and token.encode() not in bytes(stored[0])
-        assert tokens.revoke(conn, "routine") == 1
+        assert tokens.revoke(conn, "routine", "admin") == 0
+        assert tokens.revoke(conn, "routine", "factory") == 1
         assert tokens.find(conn, token, "factory") is None
 
 
