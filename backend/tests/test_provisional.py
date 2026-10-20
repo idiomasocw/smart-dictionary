@@ -635,3 +635,36 @@ def test_a_draft_with_one_bad_sense_publishes_the_good_one(
                " where key = 'en:kettle:n'") == (1,)  # fmt: skip
     qa = row("select qa from entry_revisions")[0]
     assert qa["dropped_senses"] == ["length en:kettle:n#2: short gloss over 5 words"]
+
+
+def test_a_search_with_a_leading_article_finds_the_headword(
+    migrated_database_url, anyio_backend_options
+):
+    kettle_world()
+    with connect() as conn:
+        words = [("en", w) for w in ("the", "last", "straw")]
+        words += [("es", w) for w in ("gota", "que", "colma", "vaso")]  # its Spanish, for V6
+        for language, word in words:
+            conn.execute(
+                "insert into ref_freq (dataset_id, language, word, zipf)"
+                " values ('t-freq', %s, %s, 5)",
+                (language, word),
+            )
+        seed(conn, "en:last_straw:idiom", "last straw", "phrase", kind="idiom")
+    straw = copy.deepcopy(KETTLE)
+    straw["senses"][0].update({
+        "cefr": "B2", "definition": "the final problem that makes a bad situation too hard",
+        "short_gloss": "the final problem", "gloss_es": "el problema final que colma la paciencia",
+        "equivalents": [{"term": "la gota que colma el vaso", "match": "exact"}],
+        "example": "Losing his keys was the last straw after a long day.",
+        "example_es": "Perder las llaves fue la gota que colmó el vaso tras un largo día.",
+    })  # fmt: skip
+    model = Model(straw)
+    with client(anyio_backend_options, Gateway([model], 5.0)) as api:
+        # Listed without the article: the search still reaches it, and AI writes it.
+        assert lookup(api, "The last straw!")["provisional"]["status"] == "generating"
+        assert lookup(api, "the last straw")["provisional"] == {
+            "status": "ready", "entry_key": "en:last_straw:idiom", "retry_after_ms": None,
+            "headword": None,
+        }  # fmt: skip
+    assert model.calls == 1

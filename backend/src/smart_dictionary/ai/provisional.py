@@ -575,7 +575,8 @@ def _check_and_publish(
         found = "; ".join(f"{i.check} {i.where}: {i.message}" for i in errors)
         raise NoEntry(f"the draft failed its checks: {found}"[:300], target.key)
     doc = EntryDoc.model_validate(raw)
-    if job.language == "en" and job.query not in english_forms(doc):
+    forms = english_forms(doc)
+    if job.language == "en" and not any(f in forms for f in word_requests.headwords(job.query)):
         raise NoEntry(f"{job.query!r} isn't a form of {doc.lemma!r}", target.key, final=True)
     current = _target(conn, target.key, lock=True)
     if current is None or not current.approved:

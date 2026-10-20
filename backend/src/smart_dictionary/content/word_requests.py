@@ -96,14 +96,20 @@ class Candidate:
         return self.options[0][1] if self.options else None
 
 
+# A leading article a headword is usually listed without: the last straw → last straw.
+ARTICLES = ("a", "an", "the")
+
+
 def headwords(query: str) -> list[str]:
     """The dictionary forms a normalized search may stand for, the search itself first:
-    geese → goose, gave up → give up."""
+    geese → goose, gave up → give up, the last straw → last straw."""
     words = query.split()
     if not words:
         return []
     lemmas = sorted({lemma for found in getAllLemmas(words[0]).values() for lemma in found})
     forms = [query, *(" ".join([lemma, *words[1:]]) for lemma in lemmas)]
+    if len(words) > 2 and words[0] in ARTICLES:
+        forms.append(" ".join(words[1:]))
     return list(dict.fromkeys(norm(form) for form in forms))
 
 
