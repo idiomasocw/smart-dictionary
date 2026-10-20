@@ -587,7 +587,7 @@ Caddy accepts `bbb` traffic only from the BBB server's IP. Factory routes are to
 | DELETE | `/v1/flags/{id}` | bbb: its author, or staff | Undo a hide or flag | TF-3 |
 | POST | `/v1/reports` `{target_key, reason, comment?}` | bbb (any active user) | Report a problem; answers 202 | CG-5 |
 | GET | `/v1/me/reports` | bbb | My reports and what happened to each | CG-9 |
-| POST | `/v1/requests` `{q, dir?, variety?}` | bbb (a signed-in student) | Request a word the lookup called `requestable`; answers 202, or 200 when it exists | §6.7 |
+| POST | `/v1/requests` `{q, dir?, variety?}` | bbb (a signed-in student) | Request a word the lookup called `requestable`; answers 202 `requested`, or 200 with `exists`, `quota_exceeded`, `not_requestable` or `no_student` | §6.7 |
 | POST | `/v1/events` `[{type, target_key}]` | bbb | Behavior signals only the plugin sees (sense reselected, card closed quickly); batched and rate-limited | CG-10 |
 | GET · POST | `/v1/teacher/micro-review` (v1.x) | bbb (verified teacher) | Five entries to review; thumbs up or down per sense | TF-5 |
 | GET | `/v1/admin/quality` | admin | Open reports and flags, the suspicion queue, time to fix | CG-8, OP-1 |
@@ -981,6 +981,8 @@ The lookup then answers `requestable` with the headword, and the plugin offers a
 - **One request per headword** (`word_requests`) gathers every student who asked. Each vote (`word_request_votes`) holds a user ID, the language and the search: never a name.
 - **Each student has 10 requests a day** (`WORD_REQUESTS_PER_DAY`, or the console's `word_requests_per_day`). Asking again for the same word costs nothing.
 - **Later lookups by that student** answer `requested`.
+- **A refusal is an answer, not an error:** only `requested` is 202, and every other outcome is 200 with its `status` (`exists`, `quota_exceeded`, `not_requestable`, `no_student`). The student did nothing wrong, and a browser logs every 4xx as a red console error in class. A refusal writes no request and no vote. A control character in the query (400) and a malformed body (422) stay errors.
+- **A leading article doesn't hide a headword:** a missed search of three or more words also tries itself without *a*, *an* or *the*, so *the last straw* finds *last straw*.
 
 **The owner decides in the console** (§5.5): `GET /v1/admin/requests` lists pending requests, most asked first. Each comes with its evidence: students, searches, example queries, Zipf frequency, the open lists that name it, its seed candidates' decisions, and Wiktionary's parts of speech, likeliest first.
 - **Approve** with the headword, part of speech and kind:

@@ -1,5 +1,6 @@
--- Owner reviews, for Supabase's SQL Editor (2026-10-20). Blocks 1 and 3 only read; block 2
--- changes entries, and is for after the deploy that exempts a headword from its own V10.
+-- Owner reviews, for Supabase's SQL Editor (2026-10-20). Blocks 1 and 3 only read. Blocks 2
+-- and 4 change entries: run each on its own, by selecting it. Block 2 is for after the deploy
+-- that exempts a headword from its own V10.
 
 -- 1. Quarantined entries and why: the checks their latest submission failed.
 select e.key, e.cefr, r.created_at,
@@ -35,3 +36,31 @@ where status <> 'retired'
     'murderer', 'kill', 'killed', 'killing', 'suicide', 'torture', 'terrorist', 'terrorism',
     'bomb', 'cocaine', 'heroin', 'meth', 'drunk', 'nazi', 'genocide']
 order by cefr nulls last, key;
+
+-- 4. A suggested first cut from block 3 (2026-10-20): explicit sexual terms, wording that
+--    guidelines advise against (commit suicide), slang and odd tags with little value for
+--    learners. Delete any line you want to keep, then run. Only entries nobody has written are
+--    retired; a written one stays, for the console's Retire.
+update entries set status = 'retired', updated_at = now()
+where published_at is null
+  and status::text in ('candidate', 'queued', 'needs_repair', 'quarantined')
+  and key in (
+    'en:child_pornography:n',
+    'en:oral_sex:n',
+    'en:sex_toy:n',
+    'en:orgasm:n',
+    'en:porn:n',
+    'en:porno:n',
+    'en:have_sex:v',
+    'en:sexual_intercourse:n',
+    'en:sex_object:n',
+    'en:sex_change:n',
+    'en:date_rape:n',
+    'en:statutory_rape:n',
+    'en:kill_oneself:phrv',
+    'en:commit_suicide:v',
+    'en:suicide_pact:n',
+    'en:meth:n',
+    'en:stark_naked:n'
+  )
+returning key;

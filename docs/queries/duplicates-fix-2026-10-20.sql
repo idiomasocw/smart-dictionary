@@ -18,8 +18,6 @@ insert into fix_retire values
   ('en:u-turn:n',        'en:u-turn:n~2',           'U-turn, capitalized'),
   ('en:u-turn:v',        'en:u-turn:v~2',           'U-turn, capitalized'),
   ('en:pin:v~2',         'en:pin:v',                'PIN is a noun only'),
-  -- One expression, two kinds.
-  ('en:by_the_way:idiom', 'en:by_the_way:phr',      'the hand-written fixture covers it'),
   -- Spaced against hyphenated: the hyphenated entry also answers the spaced search.
   ('en:face_to_face:adv', 'en:face-to-face:adv',    'hyphen spelling'),
   ('en:high_profile:adj', 'en:high-profile:adj',    'hyphen spelling'),
