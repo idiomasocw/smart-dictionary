@@ -168,9 +168,12 @@ def test_stats_and_misses_show_the_pipeline_without_naming_students(
         assert stats["entries"]["waiting"] == 1 + queued[0]  # pyright: ignore[reportOptionalSubscript]
         assert stats["misses"] == {
             "by_status": {"pending": 1, "provisional": 1, "published": 0, "queued": 0,
-                          "invalid": 1},
+                          "requestable": 0, "invalid": 1},
             "stuck": 1,
         }  # fmt: skip
+        assert stats["requests"] == {"pending": 0, "pending_ai_entries": 0, "approved": 0,
+                                     "rejected": 0}  # fmt: skip
+        assert stats["entries"]["unapproved"] == 0
         ai = stats["ai"]
         assert (ai["searches_per_day"], ai["searches_last_24h"], ai["students_at_cap"]) == (2, 3, 1)
         assert ai["month_spend_usd"] == 0.007

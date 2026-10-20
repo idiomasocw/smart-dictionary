@@ -29,7 +29,8 @@ where (cast(%(status)s as text) is null or e.status::text = %(status)s)
 """
 ENTRY_COLUMNS: LiteralString = """
 select e.id, e.key, e.lemma, e.pos, e.kind::text as kind, e.homograph, e.cefr,
-       e.status::text as status, e.quality::float as quality, e.attempts,
+       e.status::text as status, e.approved_at is not null as approved,
+       e.quality::float as quality, e.attempts,
        e.doc #>> '{senses,0,definition}' as definition,
        case when jsonb_typeof(e.doc -> 'senses') = 'array'
             then jsonb_array_length(e.doc -> 'senses') else 0 end as senses,

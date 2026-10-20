@@ -24,7 +24,7 @@ MEANINGS = {
 }
 STATUSES = ["published", "provisional", "generating", "validating", "queued", "needs_repair",
             "quarantined", "candidate", "retired"]  # fmt: skip
-MISS_STATUSES = ["pending", "provisional", "published", "queued", "invalid"]
+MISS_STATUSES = ["pending", "provisional", "published", "queued", "requestable", "invalid"]
 
 AI_USE = """
 select count(distinct (user_id, ref_key)),
@@ -78,6 +78,15 @@ def stats(
         " from llm_calls where created_at > now() - interval '24 hours'"
         " group by 1, 2 order by 1, 2"
     ).fetchall()
+    requests = dict(
+        conn.execute(
+            "select case when status = 'pending' and origin = 'ai_entry' then 'pending_ai_entries'"
+            " else status end, count(*) from word_requests group by 1"
+        ).fetchall()
+    )
+    unapproved = _scalar(
+        conn, "select count(*) from entries where approved_at is null and status <> 'retired'"
+    )
     uploaded, unsent = conn.execute(
         "select count(*) filter (where uploaded_at is not null),"
         " count(*) filter (where uploaded_at is null) from audio_assets"
@@ -93,6 +102,11 @@ def stats(
             "published_last_24h": published_today,
             "waiting": waiting,
             "days_to_clear": round(waiting / published_today, 1) if published_today else None,
+            "unapproved": unapproved,
+        },
+        "requests": {
+            name: requests.get(name, 0)
+            for name in ("pending", "pending_ai_entries", "approved", "rejected")
         },
         "misses": {
             "by_status": {status: misses.get(status, 0) for status in MISS_STATUSES},

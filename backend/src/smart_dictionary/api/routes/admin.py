@@ -1,27 +1,33 @@
 """The admin API (design §5.5) [OP-1]: the owner's console in the LMS reads the dictionary's
-state and changes a few settings.
+state, decides word requests (design §6.7) and changes a few settings.
 
 - **Who:** a bearer token with the `admin` scope, required by the router itself, so no route
   can be added without it. The BBB proxy secret and factory tokens don't open it.
-- **What it never does:** name a student, show a secret, create a token, or change anything
-  but the settings in core.tunables.
-- **Every change** is audited with the token's name and `X-Admin-Actor`, the LMS's person ID
-  of whoever was signed in. The LMS vouches for that person; the token is what's checked.
+- **What it never does:** name a student, show a secret, or create a token. It changes only
+  the settings in core.tunables and the decision on a word request.
+- **Every change and decision** is audited with the token's name and `X-Admin-Actor`, the
+  LMS's person ID of whoever was signed in. The LMS vouches for that person; the token is
+  what's checked.
 - **Responses** aren't cached anywhere, and each request's statements stop after 15 seconds.
 """
 
+import uuid
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Header, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from smart_dictionary.admin import browse, overview
+from smart_dictionary.admin import audit, browse, overview
 from smart_dictionary.admin import settings as admin_settings
+from smart_dictionary.ai import provisional
+from smart_dictionary.ai.gateway import Gateway, get_gateway
 from smart_dictionary.api.auth import AdminClient, admin_client
 from smart_dictionary.api.deps import SyncConnection
 from smart_dictionary.api.errors import ApiError
+from smart_dictionary.content import word_requests
 from smart_dictionary.core import tunables
+from smart_dictionary.core.entrydoc import POS, Kind
 from smart_dictionary.core.settings import AI_PROVIDERS, Settings, get_settings
 from smart_dictionary.core.text import norm
 
@@ -37,7 +43,9 @@ router = APIRouter(
 
 EntryStatus = Literal["published", "provisional", "generating", "validating", "queued",
                       "needs_repair", "quarantined", "candidate", "retired"]  # fmt: skip
-MissStatus = Literal["pending", "provisional", "published", "queued", "invalid"]
+MissStatus = Literal["pending", "provisional", "published", "queued", "requestable", "invalid"]
+RequestStatus = Literal["pending", "approved", "rejected"]
+Origin = Literal["student", "ai_entry"]
 # The LMS's person ID (a UUID): no names or emails, which the dictionary never stores.
 Actor = Annotated[
     str | None,
@@ -67,6 +75,7 @@ class EntryStats(BaseModel):
     published_last_24h: int
     waiting: int = Field(description="queued + needs_repair + provisional")
     days_to_clear: float | None = Field(description="waiting at the last 24 hours' pace")
+    unapproved: int = Field(description="AI entries hidden until you decide their requests")
 
 
 class MissStats(BaseModel):
@@ -109,8 +118,16 @@ class Run(BaseModel):
     results: dict[str, int]
 
 
+class RequestStats(BaseModel):
+    pending: int = Field(description="students' requests waiting for you")
+    pending_ai_entries: int = Field(description="AI entries from before reviews, waiting")
+    approved: int
+    rejected: int
+
+
 class Stats(BaseModel):
     entries: EntryStats
+    requests: RequestStats
     misses: MissStats
     ai: AiStats
     audio: AudioStats
@@ -132,6 +149,7 @@ class EntryRow(BaseModel):
     homograph: int
     cefr: str | None
     status: str
+    approved: bool = Field(description="false: an AI entry waiting for your decision, hidden")
     quality: float | None
     attempts: int
     definition: str | None = Field(description="the first sense's, when written")
@@ -187,6 +205,53 @@ class MissRow(BaseModel):
 
 class MissPage(Paged):
     items: list[MissRow]
+
+
+class PosKind(BaseModel):
+    pos: str
+    kind: str
+
+
+class RequestRow(BaseModel):
+    id: uuid.UUID
+    lemma: str
+    pos: str | None = Field(description="the suggestion, or what was approved")
+    kind: str | None
+    origin: Origin = Field(description="ai_entry: a Beta AI wrote before reviews, now hidden")
+    status: RequestStatus
+    entry_key: str | None
+    students: int = Field(description="how many asked, never which")
+    searches: int
+    queries: list[str] = Field(description="up to 5 of the searches that led here")
+    zipf: float | None
+    lists: list[str] = Field(description="open lists naming the word, with their level")
+    seed_decisions: list[str] = Field(description="its seed candidates' curation decisions")
+    options: list[PosKind] = Field(description="Wiktionary's parts of speech, likeliest first")
+    definition: str | None = Field(description="ai_entry: the hidden Beta's first definition")
+    first_asked_at: datetime
+    last_asked_at: datetime
+    decided_at: datetime | None
+    decided_by: str | None
+    note: str | None
+
+
+class RequestPage(Paged):
+    items: list[RequestRow]
+
+
+class Approval(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lemma: str = Field(min_length=1, max_length=80, description="as requested; casing may change")
+    pos: POS
+    kind: Kind
+    note: str | None = Field(default=None, max_length=500)
+
+
+class Rejection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str | None = Field(default=None, max_length=500)
 
 
 class SettingOut(BaseModel):
@@ -281,6 +346,79 @@ def misses(
                     **_paging(page, per_page, total))  # fmt: skip
 
 
+@router.get("/requests")
+def requests_list(
+    conn: SyncConnection,
+    status: RequestStatus | None = "pending",
+    origin: Origin | None = None,
+    q: Prefix = None,
+    page: Page = 1,
+    per_page: PerPage = 50,
+) -> RequestPage:
+    rows, total = word_requests.listing(conn, status=status, origin=origin, q=_prefix(q),
+                                        page=page, per_page=per_page)  # fmt: skip
+    return RequestPage(items=[RequestRow.model_validate(row) for row in rows],
+                       **_paging(page, per_page, total))  # fmt: skip
+
+
+@router.post("/requests/{request_id}/approve")
+def request_approve(
+    conn: SyncConnection,
+    client: AdminClient,
+    settings: Annotated[Settings, Depends(get_settings)],
+    gateway: Annotated[Gateway, Depends(get_gateway)],
+    background: BackgroundTasks,
+    request_id: uuid.UUID,
+    body: Approval,
+    actor: Actor = None,
+) -> RequestRow:
+    """Queue the word, approved and first in the factory's queue; AI writes its Beta now."""
+    try:
+        approved = word_requests.approve(
+            conn, request_id, lemma=body.lemma.strip(), pos=body.pos, kind=body.kind,
+            decided_by=audit.decided_by(client, actor), note=body.note,
+            tenant=settings.default_tenant,
+        )  # fmt: skip
+    except LookupError:
+        raise ApiError(404, "not_found", "No such request") from None
+    except ValueError as error:
+        raise ApiError(422, "invalid_value", "Can't approve it like this", str(error)) from None
+    except word_requests.Conflict as error:
+        raise ApiError(409, "conflict", "Can't approve it", str(error)) from None
+    after = {"status": "approved", "entry_key": approved.key, "pos": body.pos, "kind": body.kind}
+    audit.record(conn, client, actor, "request.approve", body.lemma, {"status": "pending"},
+                 after)  # fmt: skip
+    conn.commit()
+    if approved.write_now and gateway.chain(tunables.overrides(conn)):
+        job = provisional.Job(query=norm(body.lemma), tenant=settings.default_tenant,
+                              user_id=None, key=approved.key)  # fmt: skip
+        background.add_task(provisional.generate, job, gateway)
+    return _request_row(conn, request_id)
+
+
+@router.post("/requests/{request_id}/reject")
+def request_reject(
+    conn: SyncConnection,
+    client: AdminClient,
+    request_id: uuid.UUID,
+    body: Rejection,
+    actor: Actor = None,
+) -> RequestRow:
+    """Close the word for good; an AI entry made for it before reviews is retired."""
+    decided_by = audit.decided_by(client, actor)
+    try:
+        retired = word_requests.reject(conn, request_id, decided_by=decided_by, note=body.note)
+    except LookupError:
+        raise ApiError(404, "not_found", "No such request") from None
+    except word_requests.Conflict as error:
+        raise ApiError(409, "conflict", "Can't reject it", str(error)) from None
+    row = _request_row(conn, request_id)
+    audit.record(conn, client, actor, "request.reject", row.lemma, {"status": "pending"},
+                 {"status": "rejected", "retired": retired})  # fmt: skip
+    conn.commit()
+    return row
+
+
 @router.get("/settings")
 def settings_list(
     conn: SyncConnection, settings: Annotated[Settings, Depends(get_settings)]
@@ -328,10 +466,16 @@ def setting_reset(
 
 
 @router.get("/audit")
-def audit(conn: SyncConnection, page: Page = 1, per_page: PerPage = 50) -> AuditPage:
+def audit_log(conn: SyncConnection, page: Page = 1, per_page: PerPage = 50) -> AuditPage:
     rows, total = browse.audit(conn, page=page, per_page=per_page)
     return AuditPage(items=[AuditRow.model_validate(row) for row in rows],
                      **_paging(page, per_page, total))  # fmt: skip
+
+
+def _request_row(conn: SyncConnection, request_id: uuid.UUID) -> RequestRow:
+    rows, _ = word_requests.listing(conn, status=None, origin=None, q=None, page=1,
+                                    per_page=1, request_id=request_id)  # fmt: skip
+    return RequestRow.model_validate(rows[0])
 
 
 def _tunable(name: str) -> tunables.Tunable:

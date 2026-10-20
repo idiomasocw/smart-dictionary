@@ -2,8 +2,7 @@
 
 Only the names in TUNABLES exist here: keys, passwords and secrets can't be read or written
 through the admin API at all. A change is checked against its bounds, stored, and recorded in
-admin_audit in the same transaction, with the token's name and the person the LMS says was
-signed in.
+admin_audit in the same transaction (admin.audit).
 """
 
 from contextlib import suppress
@@ -12,6 +11,7 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Jsonb
 
+from smart_dictionary.admin import audit
 from smart_dictionary.core.settings import Settings
 from smart_dictionary.core.tunables import TUNABLES, Tunable
 from smart_dictionary.factory.tokens import Client
@@ -42,7 +42,8 @@ def change(
         " updated_by = excluded.updated_by",
         (tunable.name, Jsonb(parsed), client.name),
     )
-    _audit(conn, client, actor, "setting.set", tunable.name, before[0] if before else None, parsed)
+    previous = before[0] if before else None
+    audit.record(conn, client, actor, "setting.set", tunable.name, previous, parsed)
 
 
 def reset(conn: psycopg.Connection, client: Client, actor: str | None, tunable: Tunable) -> None:
@@ -51,7 +52,7 @@ def reset(conn: psycopg.Connection, client: Client, actor: str | None, tunable: 
         "delete from app_settings where name = %s returning value", (tunable.name,)
     ).fetchone()
     if removed is not None:
-        _audit(conn, client, actor, "setting.reset", tunable.name, removed[0], None)
+        audit.record(conn, client, actor, "setting.reset", tunable.name, removed[0], None)
 
 
 def describe(conn: psycopg.Connection, settings: Settings, tunable: Tunable) -> dict[str, Any]:
@@ -82,21 +83,3 @@ def _describe(tunable: Tunable, settings: Settings, row: Any) -> dict[str, Any]:
         "updated_at": row[1] if row is not None else None,
         "updated_by": row[2] if row is not None else None,
     }
-
-
-def _audit(
-    conn: psycopg.Connection,
-    client: Client,
-    actor: str | None,
-    action: str,
-    target: str,
-    before: Any,
-    after: Any,
-) -> None:
-    conn.execute(
-        "insert into admin_audit (client_id, client, actor, action, target, before, after)"
-        " values (%s, %s, %s, %s, %s, %s, %s)",
-        (client.id, client.name, actor, action, target,
-         None if before is None else Jsonb(before),
-         None if after is None else Jsonb(after)),
-    )  # fmt: skip
