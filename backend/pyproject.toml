@@ -38,7 +38,7 @@ audio = [
 ]
 
 [tool.uv]
-default-groups = ["dev", "data"]
+default-groups = ["dev", "data", "audio"]
 
 [build-system]
 requires = ["hatchling"]
