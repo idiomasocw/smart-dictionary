@@ -19,8 +19,9 @@ An English learner's dictionary for OneCulture World. Entries are pre-populated 
 - **Row-level security:** hosted Supabase turns RLS on for every new table in `public` (its `ensure_rls` event trigger), and the local stack doesn't. The API's role `dictionary_app` bypasses RLS (revision 0006), so new tables need no policies. Never rely on RLS for authorization here.
 - **Content keys** (entries, senses, examples) are stable forever: never reuse or renumber them.
 - **The LMS integrates through HTTP contracts only** (05 §6). Never read LMS tables, and never store student names, emails or phones.
+- **The audit routine proposes, never edits** (design §6.6): an applied finding goes through repair, a word request or a retirement, like any other change.
 - **No LLM in the lookup path.** Request-time AI goes through the gateway, with its $5/month cap.
-- **AI writes entries only for words the owner chose:** seeded, approved in the console, or approved at once by the owner's rule for listed words (`entries.approved_at`, `auto_approve_listed`). A student's search never adds a word; a real one becomes a word request (design §6.5, §6.7).
+- **AI writes entries only for words the owner chose:** seeded, approved in the console, or approved at once by the owner's rules: listed words (`auto:lists`) and common words an entry the owner chose links to (`ai:related`), which the owner verifies afterwards (`entries.approved_at`). A student's search never adds a word; a real one becomes a word request (design §6.5, §6.7).
 - **Open datasets are facts only.** `ref_wiktionary.glosses` is CC BY-SA text: use it for internal hints and checks, but never serve it or copy it into entries (`data/README.md`).
 - **Secrets** never go in the repo; `backend/.env` is local only.
 - **Git:** the owner runs every `git add` and `git commit`. Propose the exact commands, grouped into logical commits, and never add Co-Authored-By or other AI attribution lines.
@@ -42,9 +43,11 @@ uv run smart-dictionary fixtures load      # publish the hand-written entries in
 uv run smart-dictionary seeds import       # seed_candidates from the owner's and open lists
 uv run smart-dictionary seeds export       # the ranked candidates, to data/raw/seed-candidates.csv
 uv run smart-dictionary seeds queue --dry-run --limit 20   # what would be queued next, by priority
+uv run smart-dictionary seeds curate --file data/seeds/curation/<file>.csv --dry-run  # a reviewed curation file
 uv run smart-dictionary requests sync --dry-run  # suggest what entries link to; approve what the rule allows
 uv run smart-dictionary factory token --name routine       # a factory bearer token, shown once
 uv run smart-dictionary admin token --name lms             # the LMS console's admin token, shown once
+uv run smart-dictionary audit token --name audit           # the audit routine's token, shown once
 uv run smart-dictionary factory status     # entries by status, the pace, and the recent runs
 uv run --group audio smart-dictionary audio sync   # voice what published entries lack, into the outbox
 uv run smart-dictionary db app-role        # new password for the API's role; prints its DATABASE_URL

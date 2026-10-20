@@ -242,7 +242,7 @@ cat current-image
 - **Any one key is enough to start;** the others take over when the one before fails. Once the month's $5 is spent, every paid provider is skipped and only Groq's free tier answers.
 - **The cap is `AI_MONTHLY_BUDGET_USD`,** 5 by default; store that parameter only to change it.
 - **Each student can send 30 missed searches a day to AI** (`AI_SEARCHES_PER_DAY`). The window is the last 24 hours, so raising the cap lets a student who reached it search again right away.
-- **The LMS's console can change the order, both caps, the publish threshold and the approval at once of listed words** without a deploy (see "The admin console" below). Its value wins over the parameter here until you reset it there.
+- **The LMS's console can change the order, both caps, the publish threshold, the approvals at once and the audit's repairs at once** without a deploy (see "The admin console" below). Its value wins over the parameter here until you reset it there.
 
 Store each key like this, then deploy. For DeepSeek or Groq, change the name the same way:
 

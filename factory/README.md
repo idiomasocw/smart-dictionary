@@ -183,4 +183,56 @@ Every call sends `Authorization: Bearer <token>`.
 | `POST /v1/factory/batches` `{size, label}` | Leases the next batch for 3 hours and returns one grounding pack per entry |
 | `POST /v1/factory/validate` `{entries: [{key, doc}]}` | Runs the server's checks (V1–V11 and the length limits) without saving anything |
 | `POST /v1/factory/batches/{id}/entries` `{model, prompt_version, entries: [{key, doc, review, needs_repair}]}` | Submits documents. The server checks them again, then publishes, repairs or quarantines each one |
+| `POST /v1/audit/batches` `{size, label, audit_version}` | The audit's lease: the entries due next, for 3 hours, with their facts and the rules' findings. Audit token only |
+| `POST /v1/audit/batches/{id}/results` `{model, audit_version, entries: [{key, rules, findings}]}` | Records the auditor's answers and marks each entry audited. Audit token only |
 | `GET /v1/factory/batches/{id}` | The batch and the status of each of its entries |
+
+## The audit routine
+
+A second routine checks what the first one wrote, and the words waiting to be written (design §6.6). It's how the dictionary trusts Opus but verifies: it never edits an entry. It records findings, which you apply or reject in the LMS console's Audit page. With `audit_auto_repair` on (the default), a high-confidence fix to an entry's content goes straight back to the factory, which rewrites the entry with every check.
+
+| Path | Who uses it, and how |
+|---|---|
+| `AUDIT.md` | **You paste it, whole, into the audit routine's Instructions box.** The run's steps and the auditor's and checker's briefs |
+| `bin/pull_audit.py --size 100 --groups 4 --label "<label>"` | Leases the entries due next, with their facts and the server's own findings, into `work/audit/batch.json` and `work/audit/groups/group-N.json`. Exits 2 when nothing is due |
+| `bin/submit_audit.py --model <model ID>` | Submits the auditors' answers from `work/audit/out/group-N.json`, and prints what was recorded, applied at once, or refused and why |
+
+The scripts send `AUDIT_TOKEN` when it's set, as the factory's send `FACTORY_TOKEN`. Every entry records the version of the instructions that audited it (a hash of AUDIT.md, STYLE.md and the rubric), so when you change one of them, every entry is due again.
+
+**Why a separate routine, and not a step in the factory's runs.** A reviewer in the same run judges work written minutes earlier, from the same instructions. The audit reads entries days or months later, with the lists' and Wiktionary's evidence and the server's own checks in hand, and it can go back over everything already published. Its token can't lease or publish entries, and the factory's can't audit.
+
+### Set it up
+
+Do these once, after the deploy that brings revision 0014.
+
+1. **Create its token.** From `backend/`, in Git Bash, as for the factory's:
+
+   ```bash
+   read -rsp "Owner DATABASE_URL (session pooler): " DATABASE_URL && echo && export DATABASE_URL
+   uv run smart-dictionary audit token --name audit | tr -d '\r\n' | clip
+   unset DATABASE_URL
+   ```
+
+   The token starts with `sdf_` and can only audit. To cut it off, run `uv run smart-dictionary audit revoke --name audit` the same way.
+2. **Create its environment** at claude.ai/code, like step 4 above, with the name `smart-dictionary-audit`, the same Custom network rule (only `dictionary.onecultureworld.com`), and a Bearer network secret named `audit token` holding this token. A separate environment keeps each routine's token to itself.
+3. **Create the routine** at claude.ai/code/routines:
+
+   | Field | Value | Why |
+   |---|---|---|
+   | Name | `Smart Dictionary audit` | |
+   | Instructions | The whole of `factory/AUDIT.md`. For the first run, change its `BATCH:` line to `BATCH: 10 entries in 1 group.` | A short, cheap first run |
+   | Model | **Opus 5.5** | The audit is judgment: the model you trust most |
+   | Repository | `idiomasocw/smart-dictionary` | Each run reads STYLE.md, the rubric and the scripts from its clone |
+   | Environment | `smart-dictionary-audit` | Its own network rule and token |
+   | Connectors | Remove every one | As for the factory |
+   | Trigger | Daily, at a quiet hour, once a first run works | Findings wait for you each morning |
+
+4. **Run it once** with **Run now**. Success: the lease prints one group of 10, an auditor and a checker run, and `submit_audit.py` prints a line such as `audited 10, findings 3, applied at once 1, …`. Then set the `BATCH:` line back to `BATCH: 100 entries in 4 groups.`
+
+**When `AUDIT.md` changes in the repo,** paste it into the routine again. The run reads every other file from its clone.
+
+### Reading its work
+
+- **The run's report:** the summary line, anything the server refused, and patterns worth a look, such as the same problem across many entries (a rule in STYLE.md, more than single entries).
+- **The console's Audit page:** open findings, the most confident first, and what was applied at once. For each type of finding it shows how often you applied and rejected them over 90 days: when you nearly always apply one type, it's safe to trust it with more.
+- **A finding you reject** closes for good: the server's checks never raise it again, and the auditor sees it among the entry's past decisions.

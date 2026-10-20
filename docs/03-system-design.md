@@ -460,7 +460,7 @@ class EntryDoc(BaseModel):
 ```
 
 **Related links** (`content/related.py`) name entries by key, and the routine may link a word the dictionary lacks or name it under another key:
-- **A card shows a link** only when an entry students see stands for it: the key itself; else the same word and part of speech under another homograph (`en:tv:n` opens `en:tv:n~2`); else, for a multiword expression, its entry of any kind, with or without its article (`en:by_the_way:phr` opens the idiom). Other links stay in the document, hidden, and appear once their entry is shown. The card's ETag covers the links, so a cached card picks up a new one.
+- **A card shows a link** only when an entry students see stands for it: the key itself; else the same word and part of speech under another homograph (`en:tv:n` opens `en:tv:n~2`); else, for a multiword expression, its entry of any kind, with or without its article (`en:by_the_way:phr` opens the idiom); else the entry that lists it as a spelling variant under the same part of speech (`en:colour:n` opens *color*). Other links stay in the document, hidden, and appear once their entry is shown. The card's ETag covers the links, so a cached card picks up a new one.
 - **A link to a word with no entry at all** becomes a suggestion for the owner when the entry publishes (§6.7).
 
 **Filled by the server, not the AI:** frequency band, inflected forms of the lemma and of each spelling variant (UniMorph/LemmInflect: *realise* → *realised*), audio, embeddings, L1 forms, and `quality`. The AI may add irregular forms and spelling variants, which the validators then check.
@@ -562,6 +562,7 @@ Input: the selected text, its sentence (≤ 500 characters) and the selection of
 |---|---|---|
 | `bbb` | Requests arrive through the BBB nginx proxy carrying `X-Dict-Secret` (constant-time compare) plus `X-BBB-Meeting`, `X-BBB-Ext-User` and `X-BBB-Is-Mod`. A FastAPI dependency builds a `Principal`; `users` rows are created lazily on first use | Students and teachers |
 | `factory` | `Authorization: Bearer <token>`, scope `factory` (hashed in `api_clients`) | The routine |
+| `audit` | `Authorization: Bearer <token>`, scope `audit` (hashed in `api_clients`, created only by the CLI): lease entries for an audit and submit findings, nothing else | The audit routine (§6.6) |
 | `admin` | `Authorization: Bearer <token>`, scope `admin` (hashed in `api_clients`, created only by the CLI), optionally only from the LMS server's address (§5.5) | You, through the LMS's console |
 | `lms` | Bearer token, scope `lms`: server-to-server calls from the LMS (later: `/v1/resolve`, `/v1/demand`) | The LMS backend |
 | `jwt` *(later)* | An OIDC JWT verified against the issuer's JWKS (Cognito for your LMS web and app) | Students outside BBB |
@@ -600,11 +601,13 @@ Caddy accepts `bbb` traffic only from the BBB server's IP. Factory routes are to
 | POST | `/v1/factory/batches/{id}/entries` | factory | Submit EntryDocs and review results | CG-3 |
 | GET | `/v1/factory/batches/{id}` | factory | Batch outcome | CG-3 |
 | GET | `/v1/factory/golden` | factory | Golden set + rubric | CG-6 |
+| POST | `/v1/audit/batches` `{size, label, audit_version}` · `/v1/audit/batches/{id}/results` | audit | Lease the entries due for an audit, with facts and the rules' findings; submit the auditor's answers (§6.6) | CG-7 |
 | POST | `/v1/admin/seeds/import` · GET `/v1/admin/seeds/export` | admin | Seed builder | CG-1 |
 | GET | `/v1/admin/stats` | admin | Entries by status, missed searches, AI use and spend, audio, recent runs (§5.5) | OP-1 |
 | GET | `/v1/admin/entries?letter=&status=&q=&sort=&page=&per_page=` · `/v1/admin/entries/letters` · `/v1/admin/entries/{key}` | admin | Browse entries, with why a repair was needed (§5.5) | OP-1 |
 | GET | `/v1/admin/misses?status=&stuck=&q=&page=&per_page=` | admin | Missed searches and their AI attempts (§5.5) | LK-10, OP-1 |
-| GET | `/v1/admin/requests?status=&origin=&q=&page=&per_page=` · POST `/v1/admin/requests/{id}/approve` `{lemma, pos, kind, note?}` · POST `/v1/admin/requests/{id}/reject` `{note?}` | admin | The word-request queue, with its evidence; the owner's decisions, audited (§6.7) | OP-1 |
+| GET | `/v1/admin/requests?status=&origin=&q=&to_verify=&page=&per_page=` · POST `/v1/admin/requests/{id}/approve` `{lemma, pos, kind, note?}` · POST `/v1/admin/requests/{id}/reject` `{note?}` · POST `/v1/admin/requests/confirm` `{ids, note?}` | admin | The word-request queue, with its evidence; the owner's decisions, and confirmations of what was approved at once, audited (§6.7) | OP-1 |
+| GET | `/v1/admin/findings?status=&type=&source=&confidence=&q=&key=&page=&per_page=` · POST `/v1/admin/findings/apply` · `/v1/admin/findings/reject` `{ids, note?}` | admin | The audit's findings and the owner's decisions, audited (§6.6) | CG-7, OP-1 |
 | GET · PUT · DELETE | `/v1/admin/settings[/{name}]` · GET `/v1/admin/audit` | admin | The owner's settings, audited (§5.5) | OP-1, OP-2 |
 | GET | `/healthz` · `/readyz` | none | Health checks | — |
 
@@ -671,7 +674,8 @@ The audit's admin dashboard (§12 there) arrives as a console inside the LMS, wh
 - `GET /v1/admin/misses`: missed searches and their AI attempts; `stuck=true` lists those AI gave up on that no seed covers.
 - `GET /v1/admin/audit`: every setting change.
 
-- `GET /v1/admin/requests`, with `POST …/approve` and `…/reject`: the word-request queue (§6.7), students' requests and related words, each with its evidence and its `twins`.
+- `GET /v1/admin/requests`, with `POST …/approve` and `…/reject`: the word-request queue (§6.7), students' requests and related words, each with its evidence and its `twins`. `to_verify=true` lists the words approved at once that the owner hasn't confirmed, and `POST /v1/admin/requests/confirm` keeps them (to undo one, retire its entry).
+- `GET /v1/admin/findings`, with `POST …/apply` and `…/reject`: the audit's findings (§6.6), open ones first, the most confident first.
 
 **What it does to single entries** (`admin/curation.py`), each audited (`entry.add`, `entry.retire`, `entry.requeue`):
 - **`POST /v1/admin/entries`** `{lemma, pos, kind, note?}`: add a word, queued and approved, first in the factory's queue. A pending request for it is approved with it. It refuses a key that exists, or another entry for the same multiword expression (§3.6).
@@ -689,6 +693,8 @@ It never names a student: AI use is counted per search, and the console sees how
 | `ai_monthly_budget_usd` | `AI_MONTHLY_BUDGET_USD`, 5 | 0–50 |
 | `word_requests_per_day` | `WORD_REQUESTS_PER_DAY`, 10 | 0–50 |
 | `auto_approve_listed` | `AUTO_APPROVE_LISTED`, true | On or off |
+| `auto_approve_related` | `AUTO_APPROVE_RELATED`, true | On or off |
+| `audit_auto_repair` | `AUDIT_AUTO_REPAIR`, true | On or off |
 | `factory_publish_threshold` | `FACTORY_PUBLISH_THRESHOLD`, 0.7 | 0.5–1 |
 
 - **Where they live:** an override is a row in `app_settings` and wins over the environment; `DELETE` removes it, and the environment's value applies again. Each API process rereads them every 15 seconds, so a change needs no deploy.
@@ -753,7 +759,12 @@ You asked whether there's a better way to reach 20k than your own lists. My answ
 - **Open-list items** take their US spelling and lemma before matching (*centre* → *center*, *were* → *be*).
 - **Spacing variants** fold when Wiktionary records one as the other's alternative form (*best seller* → *bestseller*). Other pairs with the same part of speech are flagged.
 - **Homographs** are numbered as entry keys are (*pole*, *Pole* → `en:pole:n~2`).
-- **Not yet:** the step-5 filters and the curation run (step 7).
+- **The curation run (step 7), as files:** a model judges the seeds and entries the rules couldn't decide, writing one CSV per backlog under `data/seeds/curation/`. The owner reviews the file, then `smart-dictionary seeds curate --file <csv>` applies it (`--dry-run` first; `seeds.curate`):
+  - **seeds** (`lemma, pos, kind, decision, confidence, reason`): a seed that waited with no part of speech or kind gets them, or is declined; `seeds queue` then queues it, or links it to its expression's entry;
+  - **entries** (`key, decision, pos, kind, confidence, reason`): an unwritten entry keeps its kind, moves to the right one (its key retired, the right key queued in the same place with its seed, approval and searches; an entry of that kind that exists takes the seed instead), or is retired. A written entry isn't touched: its decision becomes an audit finding (§6.6) for the owner to apply.
+
+  The first files (2026-10-20, Opus 5.5) cover the 724 seeds that waited with no part of speech or kind, most of them multiword items Wiktionary lacks, and the 176 multiword verbs stored as plain words. A plain word can't have a pattern (`entrydoc.py`), so the app couldn't match *hits the ceiling* in a text; most are idioms or phrases.
+- **Not yet:** the step-5 filters.
 
 A re-run replaces the undecided candidates and keeps the decided ones. Seed candidates and their variants join the Wiktionary keep set, and the builder reads Wiktionary, so a new database needs `data import --all`, `seeds import`, `data import kaikki-en`, then `seeds import` again. Starting with `seeds import` leaves a few rows out: with no Wiktionary rows, the first build folds some list words into others (*chiselled* into *chisel*).
 
@@ -960,10 +971,36 @@ audits, golden set ───┘
   - A hide is lifted when the repaired item is published. If the routine finds nothing wrong and leaves the item unchanged, the hide stays until its teacher or the owner lifts it.
 
 **Proactive checks**
-- **Audits** [CG-7]: every 10th batch includes 5 published entries for re-review.
+- **Audits** [CG-7]: a second routine, below.
 - **Re-validation** [CG-7]: when the validators' version changes, a job re-validates every published entry, and failures go to repair.
 - **Golden set** [CG-6]: 50 entries chosen across levels and kinds, with your ratings in `factory/golden/ratings.csv`. `validate.py --golden` measures how well the reviewer agrees with your ratings, and CI runs it whenever `factory/` changes. The target is agreement ≥ 90%.
 - **Teacher micro-review** [TF-5, v1.x]: each teacher gets the five most suspicious or lowest-quality entries their classes looked up in the last 7 days. A thumbs down becomes a flag, and a thumbs up lowers the suspicion score.
+
+**The audit routine** [CG-7] (`factory/audit.py`, `factory/AUDIT.md`, revision 0014, the owner's choice of 2026-10-20: "trust Opus, but verify"). A second Claude Code routine, Opus 5.5, once or twice a day, re-reads entries in batches of about 100 and records what it finds. It never edits an entry.
+- **The server keeps the audit's place.** Each entry records when it was audited and under which instructions (`audit_version`, a hash of AUDIT.md, STYLE.md and the rubric). A lease (`POST /v1/audit/batches`, three hours) hands out the entries due next, so the routine has no memory to lose: a crashed run's entries are simply due again, and changed instructions make every entry due again.
+- **What's due first:**
+  1. words approved at once (`ai:related`, `auto:lists`), before anything else;
+  2. written entries never audited, the most looked-up in 30 days first;
+  3. unwritten entries: their facts only (a real learner word, the right part of speech and kind, no twin), before the factory spends a run on them;
+  4. entries audited under older instructions, then those audited over 180 days ago.
+
+  Betas (rewritten soon anyway), entries in repair, and entries with an open finding wait.
+- **Two layers.** The server's rules are free and give the same answer every time. They raise what data alone can show:
+  - a level two or more steps from CEFR-J's or Octanove's (one step is a judgment call);
+  - a part of speech those lists give, or Wiktionary gives with at least 3 senses and 40% of the main one's, that has no entry and no seed;
+  - a multiword entry stored as a plain word while Wiktionary has it only as an idiom, phrasal verb or phrase;
+  - a twin (§3.6), raised once per pair;
+  - a headword Wiktionary lacks;
+  - a related link that names no dictionary word.
+
+  The auditor confirms or dismisses each, with a confidence, and adds what needs judgment: missing or wrong meanings, definitions, levels with no list behind them, examples, Spanish. A rule finding the owner rejected, or the auditor dismissed, is never raised again (its `fingerprint`), and each item carries the entry's past decisions so the auditor doesn't repeat them.
+- **Each finding** (`audit_findings`) has a type (`cefr`, `meaning`, `definition`, `example`, `spanish`, `content`, `part_of_speech`, `kind`, `duplicate`, `remove`), the key it's about, the evidence, a proposed fix, a confidence and a source (`rules` or `ai`). The server refuses one that doesn't fit: a key that isn't in the entry, a content finding on an unwritten entry, a part of speech the entry model lacks.
+- **Applying one goes through the paths that exist:**
+  - **content** (`cefr` to `content`) sends the entry to repair: a `needs_repair` revision whose `qa` holds the findings (`audit`, and as review notes), so the factory leases it next, rewrites it with every check and keeps its keys, while students keep seeing the published document;
+  - **`part_of_speech`** adds the word, as the owner's (curation `add`, so the twin rule applies);
+  - **`kind`** retires the entry and adds it again under the right kind;
+  - **`duplicate`** retires the twin it names, and **`remove`** retires the entry.
+- **Trust, verified.** With `audit_auto_repair` on (the default), a high-confidence content finding is applied when it's submitted (`auto:audit`). A checker sub-agent first re-reads every high-confidence answer and lowers the ones it doubts. Everything else waits for the owner in the console, who applies or rejects in bulk. For each type, the console shows how many findings the owner applied and rejected over 90 days (`your_decisions_90d`): when one type is nearly always applied, its findings can be trusted with more.
 
 **Schema changes** (a later migration; the §3.4 sketch and revision 0001 predate them)
 - **Targets:** `target_key` is a sense, example or note key; `sense_key|variety|term` for an equivalent; `entry_key|ipa|variety` for a pronunciation; or, for a *missing meaning* report only, the entry key.
@@ -975,7 +1012,7 @@ audits, golden set ───┘
 
 ### 6.7 Word requests: the owner approves what isn't seeded
 
-A real word nobody seeded waits for the owner (`content/word_requests.py`, revisions 0012 and 0013). It comes from a student's request (origin `student`), a link in a published entry (`related`), or a Beta AI wrote before reviews (`ai_entry`).
+A real word nobody seeded waits for the owner (`content/word_requests.py`, revisions 0012 to 0014). It comes from a student's request (origin `student`), a link in a published entry (`related`), or a Beta AI wrote before reviews (`ai_entry`).
 
 **The word limit** is 10 words, the longest seeded expression, so *hit the nail on the head* (6) can be requested. Until 2026-10-20 it was 4, and every longer idiom answered "not found" with no button.
 
@@ -1005,12 +1042,15 @@ The lookup then answers `requestable` with the headword, and the plugin offers a
 
 **Related words** (`content/related.py`): when an entry publishes, each link to a word with no entry at all, retired ones included, becomes a request of origin `related`. `word_request_links` keeps which entries link to it and how (`linked_from`). Typos, blocked words and words the owner declined are skipped, as for students. Nobody waits for one, so once approved it takes its natural place in the queue (level, then frequency), and AI writes no Beta for it until a student searches. `smart-dictionary requests sync` does the same for every published entry, for links written before this.
 
-**Approved at once** (`auto_approve`; the console's `auto_approve_listed`, on by default, the owner's choice of 2026-10-20). A student's request or a related word is approved without waiting, as `auto:lists`, when:
-- **a curated list or a seed names it** (`ref_lists`, or a seed candidate that wasn't rejected): the owner's lists and the open learner lists are the owner's choice of sources, so such a word is a gap, not a novelty;
-- **the dictionary has no entry for it** under any part of speech, retired ones included: it fills gaps and never adds a part of speech to a word that has one;
-- **its part of speech and kind are clear:** the seed's; else the link's, when Wiktionary has it; else Wiktionary's one option under the part of speech CEFR-J or Octanove gives; else Wiktionary's only option.
+**Approved at once** (`auto_approve`, the owner's choices of 2026-10-20). A student's request or a related word is approved without waiting when the dictionary has no entry for it under any part of speech, retired ones included (it fills gaps and never adds a part of speech to a word that has one), its part of speech and kind are clear, and one of two rules allows it:
+- **The lists' rule** (`auto:lists`, the console's `auto_approve_listed`, on by default): a curated list or a seed names it (`ref_lists`, or a seed candidate that wasn't rejected). The owner's lists and the open learner lists are the owner's choice of sources, so such a word is a gap, not a novelty.
+- **Chosen by AI** (`ai:related`, `auto_approve_related`, on by default: trust the routine's model, and verify). An entry the owner chose links to it, and its rarest word is common enough (wordfreq Zipf ≥ 3, about once per million words), so links can't bring in rarities. **One hop only:** a link from an entry AI chose doesn't count, so the dictionary can't grow by chains of links past the owner's lists.
 
-Anything else waits for the owner: *hit the nail on the head* is in no list, and *light* is a noun and an adjective. The request's `note` records why it was approved (`auto: on ngsl; noun/word from Wiktionary, its only one`), and the console counts them (`auto_approved`). A student's request is decided once the answer has gone, and when approved, AI writes its Beta at once. `requests sync` applies the rule to what was pending before.
+**A clear part of speech and kind** is the seed's; else the links', when Wiktionary has it (`word_request_links.target_key` keeps the key each link named); else Wiktionary's one option under the part of speech CEFR-J or Octanove gives; else Wiktionary's only option. A link to another word's spelling variant (*colour*, listed under *color*) never becomes a request.
+
+Anything else waits for the owner: *hit the nail on the head* is in no list and no entry links to it, *perspicacious* is too rare, and *light* is a noun and an adjective. The request's `note` records why it was approved (`auto: on ngsl; noun/word from Wiktionary, its only one`; `ai: linked from en:go:v see_also; verb/phrasal_verb from the link, as Wiktionary has it; Zipf 4.0`), and the console counts each rule's approvals (`auto_approved`, `ai_chosen`). A student's request is decided once the answer has gone, and when approved, AI writes its Beta at once. A related word waits its turn in the factory. `requests sync` applies both rules to what was pending before.
+
+**Verified afterwards.** Every word approved at once stays on the console's to-verify list (`to_verify`) until the owner confirms it, alone or in bulk; to undo one, the owner retires its entry. The audit routine (§6.6) reads these words first and reports any doubt as a finding, so the owner can confirm the rest without reading each one.
 
 **One multiword expression, one entry:** Approve refuses a key while an approved entry has the same expression under another kind or article (409, naming it; §3.6). Each request row lists the entries for its headword (`twins`), so the owner sees the clash before deciding.
 
