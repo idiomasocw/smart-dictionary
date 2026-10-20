@@ -12,6 +12,7 @@ from factory_docs import GO_DOC, go_doc
 from smart_dictionary.ai.gateway import Gateway, get_gateway
 from smart_dictionary.api.app import create_app
 from smart_dictionary.cli import alembic_config
+from smart_dictionary.content.word_requests import headwords
 from smart_dictionary.core import tunables
 from smart_dictionary.db.sync import connect
 from smart_dictionary.factory import lease, tokens
@@ -337,3 +338,62 @@ def test_the_openapi_shows_both_answers(migrated_database_url):
     status = spec["components"]["schemas"]["RequestOut"]["properties"]["status"]
     assert status["enum"] == ["requested", "exists", "quota_exceeded", "not_requestable",
                               "no_student"]  # fmt: skip
+
+
+def test_a_long_idiom_can_be_requested(migrated_database_url, anyio_backend_options):
+    kettle_world(seeded=False)
+    with connect() as conn:
+        for word in ("hit", "the", "nail", "on", "head"):
+            conn.execute("insert into ref_freq (dataset_id, language, word, zipf)"
+                         " values ('t-freq', 'en', %s, 4.5)", (word,))  # fmt: skip
+        conn.execute(
+            "insert into ref_wiktionary (dataset_id, word, word_norm, pos, pos_raw, kind, glosses)"
+            " values ('t-wiki', 'hit the nail on the head', 'hit the nail on the head', 'verb',"
+            " 'verb', 'idiom', '{To be exactly right.}')"
+        )
+    with api(anyio_backend_options) as client:
+        found = lookup(client, "Hit the nail on the head!")["provisional"]
+        assert (found["status"], found["headword"]) == ("requestable", "hit the nail on the head")
+        made = ask(client, "Hit the nail on the head")
+        assert made.status_code == 202, made.text
+        assert made.json()["headword"] == "hit the nail on the head"
+        # Longer than any seeded expression: not a headword.
+        assert lookup(client, " ".join(["nail"] * 11))["provisional"]["status"] == "invalid"
+    assert row("select pos, kind::text, origin from word_requests") == (
+        "phrase", "idiom", "student",
+    )  # fmt: skip
+
+
+def test_a_search_finds_an_expression_with_or_without_its_article():
+    assert headwords("last straw") == ["last straw", "the last straw", "a last straw"]
+    assert headwords("open secret") == ["open secret", "the open secret", "an open secret"]
+    assert headwords("the last straw") == ["the last straw", "last straw"]
+    assert headwords("a few") == ["a few"]  # one word would be left
+    assert headwords("geese") == ["geese", "goose"]
+
+
+def test_seeds_left_without_their_entry_find_it(scratch_database_url):
+    config = alembic_config()
+    command.upgrade(config, "0012")
+    with connect() as conn:
+        # "raise" was seeded, but a Beta AI wrote for a search existed first: `seeds queue`
+        # skipped the key, so 0012 took the Beta for a word nobody chose.
+        beta = conn.execute(
+            "insert into entries (key, language, lemma, lemma_norm, pos, kind, status, sources,"
+            " published_at) values ('en:raise:v', 'en', 'raise', 'raise', 'verb', 'word',"
+            " 'provisional', array['provisional'], now()) returning id"
+        ).fetchone()
+        assert beta is not None
+        conn.execute(
+            "insert into seed_candidates (lemma, lemma_norm, pos, kind, sources, originals)"
+            " values ('raise', 'raise', 'verb', 'word', array['owner:list.txt'], array['raise'])"
+        )
+        conn.execute(
+            "insert into word_requests (lemma, lemma_norm, pos, kind, origin, entry_key)"
+            " values ('raise', 'raise', 'verb', 'word', 'ai_entry', 'en:raise:v')"
+        )
+    command.upgrade(config, "head")
+    assert row("select approved_by from entries") == ("seeds",)
+    assert row("select entry_id = %s, decision from seed_candidates", beta[0]) == (True, "accept")
+    assert row("select status, decided_by from word_requests") == ("approved", "seeds")
+    command.downgrade(config, "0012")

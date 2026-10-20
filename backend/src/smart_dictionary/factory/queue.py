@@ -8,6 +8,12 @@ writes it and submits it. Candidates wait for the curation run when they lack a 
 speech or kind, or when the two can't form an entry (a `word` marked `phrase`, as the entry
 model requires). Rejected or merged candidates are never queued.
 
+A candidate whose word has an entry already (a Beta AI wrote for a search, a fixture, or the
+same multiword expression under another kind, or with or without its article: *by the way* as
+an idiom beside the phrase) is linked to that entry instead, and the entry is approved: the
+owner chose the word (ADOPT). One headword of one kind under two parts of speech, or as two
+homographs, is two entries on purpose (*a few*, determiner and pronoun; design §3.6).
+
 Priority puts the level first (A1 to C2, then words without a level), the owner's lists
 before the open lists within a level, and frequency after that. The first milestone is
 A1-B2 coverage, so ordering by tier alone would start with function words and leave basic
@@ -44,16 +50,66 @@ where c.pos is not null and c.kind is not null and c.entry_id is null
     select from entries e
     where e.language = 'en' and e.lemma_norm = c.lemma_norm and e.pos = c.pos
       and e.kind = c.kind and e.homograph = c.homograph)
-  -- One multiword expression, one entry: never by the way as an idiom beside the phrase.
-  and not exists (
+  -- One multiword expression, one entry: never by the way as an idiom beside the phrase,
+  -- or last straw beside the last straw. ADOPT links such a candidate to that entry.
+  and not (strpos(c.lemma_norm, ' ') > 0 and exists (
     select from entries e
-    where e.language = 'en' and e.lemma_norm = c.lemma_norm and e.pos = c.pos
-      and e.kind <> c.kind and e.kind <> 'word' and c.kind <> 'word' and e.status <> 'retired')
+    where e.language = 'en' and expression_of(e.lemma_norm) = expression_of(c.lemma_norm)
+      and e.status <> 'retired' and (e.lemma_norm <> c.lemma_norm or e.kind <> c.kind)))
+"""
+
+# The candidates whose word has an entry already, each with the entry it stands for: the one
+# with its own key, else (for a multiword expression) the written one, then the first queued.
+ADOPT = """
+with found as (
+  select c.id as candidate_id, e.id as entry_id, true as exact, e.published_at, e.priority,
+         e.key
+  from seed_candidates c
+  join entries e on e.language = 'en' and e.lemma_norm = c.lemma_norm and e.pos = c.pos
+                and e.kind = c.kind and e.homograph = c.homograph
+  where c.entry_id is null and c.pos is not null and c.kind is not null
+    and coalesce(c.decision, 'accept') = 'accept' and e.status <> 'retired'
+    and (%(lemmas)s::text[] is null or c.lemma_norm = any(%(lemmas)s))
+    and (%(levels)s::text[] is null or c.levels && %(levels)s)
+  union all
+  select c.id, e.id, false, e.published_at, e.priority, e.key
+  from seed_candidates c
+  join entries e on e.language = 'en'
+                and expression_of(e.lemma_norm) = expression_of(c.lemma_norm)
+  where c.entry_id is null and c.pos is not null and c.kind is not null
+    and coalesce(c.decision, 'accept') = 'accept' and e.status <> 'retired'
+    and strpos(c.lemma_norm, ' ') > 0 and (e.lemma_norm <> c.lemma_norm or e.kind <> c.kind)
+    and (%(lemmas)s::text[] is null or c.lemma_norm = any(%(lemmas)s))
+    and (%(levels)s::text[] is null or c.levels && %(levels)s)
+), chosen as (
+  select distinct on (candidate_id) candidate_id, entry_id
+  from found
+  order by candidate_id, exact desc, published_at is not null desc, priority desc, key
+), linked as (
+  update seed_candidates c set entry_id = chosen.entry_id, decision = 'accept',
+                               updated_at = now()
+  from chosen where c.id = chosen.candidate_id
+  returning chosen.entry_id
+)
+update entries e set approved_at = coalesce(e.approved_at, now()),
+                     approved_by = coalesce(e.approved_by, 'seeds'), updated_at = now()
+where e.id in (select entry_id from linked)
+returning e.key
+"""
+# A review still pending for a word the owner has now seeded is decided by the seed.
+SEEDED = """
+update word_requests r
+set status = 'approved', entry_key = e.key, decided_at = now(), decided_by = 'seeds',
+    note = coalesce(r.note, 'seeded')
+from entries e
+where e.key = any(%s) and r.status = 'pending'
+  and (r.entry_key = e.key or (r.entry_key is null and r.lemma_norm = e.lemma_norm))
 """
 
 CHUNK = 2000
-# One statement per chunk. A key that already exists is skipped, so its candidate stays
-# unlinked; sources travel as JSON because Postgres arrays of arrays must be rectangular.
+# One statement per chunk. ELIGIBLE leaves out the keys that exist (ADOPT links those), so a
+# conflict here is only a key queued since; sources travel as JSON because Postgres arrays of
+# arrays must be rectangular.
 INSERT = """
 insert into entries (id, key, language, lemma, lemma_norm, pos, kind, homograph, cefr,
                      freq_zipf, priority, status, sources, approved_at, approved_by)
@@ -108,11 +164,15 @@ def queue(
     progress: Callable[[int, int], None] | None = None,
 ) -> list[Queued]:
     """Queue the eligible candidates in priority order; returns what was (or would be) queued.
+    First, the candidates whose word has an entry already are linked to it (adopt).
 
     The rows go in chunks of CHUNK, two statements each, and each chunk is committed: a
     full queue of ~38,000 words takes seconds over a remote connection instead of hours,
     shows its progress, and an interrupted run keeps its chunks, so running it again
     carries on from there."""
+    if not dry_run:
+        adopt(conn, lemmas=lemmas, levels=levels)
+        conn.commit()
     with conn.cursor(row_factory=dict_row) as cursor:
         rows = cursor.execute(ELIGIBLE, {"lemmas": lemmas, "levels": levels}).fetchall()
     for row in rows:
@@ -151,11 +211,25 @@ def queue(
             found[0]
             for found in conn.execute(LINK, ([row["id"] for row, _, _ in chunk], ids)).fetchall()
         }
+        conn.execute(SEEDED, ([key for row, key, _ in chunk if row["id"] in linked],))
         conn.commit()
         queued += [_queued(row, key, cefr) for row, key, cefr in chunk if row["id"] in linked]
         if progress is not None:
             progress(start + len(chunk), len(planned))
     return queued
+
+
+def adopt(
+    conn: psycopg.Connection,
+    *,
+    lemmas: list[str] | None = None,
+    levels: list[str] | None = None,
+) -> list[str]:
+    """Link each candidate whose word has an entry already to that entry, and approve it;
+    returns the entries' keys. The caller commits."""
+    keys = [row[0] for row in conn.execute(ADOPT, {"lemmas": lemmas, "levels": levels})]
+    conn.execute(SEEDED, (keys,))
+    return keys
 
 
 def _queued(row: dict[str, Any], key: str, cefr: str | None) -> Queued:

@@ -171,8 +171,8 @@ def test_stats_and_misses_show_the_pipeline_without_naming_students(
                           "requestable": 0, "invalid": 1},
             "stuck": 1,
         }  # fmt: skip
-        assert stats["requests"] == {"pending": 0, "pending_ai_entries": 0, "approved": 0,
-                                     "rejected": 0}  # fmt: skip
+        assert stats["requests"] == {"pending": 0, "pending_ai_entries": 0, "pending_related": 0,
+                                     "approved": 0, "auto_approved": 0, "rejected": 0}  # fmt: skip
         assert stats["entries"]["unapproved"] == 0
         ai = stats["ai"]
         assert (ai["searches_per_day"], ai["searches_last_24h"], ai["students_at_cap"]) == (2, 3, 1)
@@ -224,6 +224,8 @@ def test_settings_change_within_bounds_apply_and_are_audited(
             ("ai_searches_per_day", 2.5),
             ("ai_searches_per_day", True),
             ("factory_publish_threshold", 0.1),
+            ("auto_approve_listed", 1),
+            ("auto_approve_listed", "yes"),
         ):
             wrong = client.put(f"/v1/admin/settings/{name}", json={"value": value}, headers=auth)
             assert wrong.status_code == 422, (name, value)

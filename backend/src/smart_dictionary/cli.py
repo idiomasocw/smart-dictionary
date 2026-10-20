@@ -147,6 +147,42 @@ def _seeds_queue(
     print(f"{'would queue' if dry_run else 'queued'} {len(queued)} entries")
 
 
+def _requests_sync(dry_run: bool) -> None:
+    """Turn every published entry's links to missing words into suggestions, then apply the
+    auto-approval to every pending request of a student or a link."""
+    from smart_dictionary.content import related, word_requests
+    from smart_dictionary.core.settings import get_settings
+    from smart_dictionary.db.sync import connect
+
+    tenant = get_settings().default_tenant
+    with connect() as conn:
+        entries = conn.execute(
+            "select key, doc->'related' from entries where published_at is not null"
+            " and status <> 'retired' and jsonb_array_length(doc->'related') > 0 order by key"
+        ).fetchall()
+        suggested = related.suggest(conn, [(key, links) for key, links in entries], tenant=tenant)
+        pending = conn.execute(
+            "select id, lemma from word_requests where status = 'pending'"
+            " and origin in ('student', 'related') order by lemma"
+        ).fetchall()
+        approved = [
+            (lemma, found.key)
+            for request_id, lemma in pending
+            if (found := word_requests.auto_approve(conn, request_id, tenant=tenant))
+        ]
+        if dry_run:
+            conn.rollback()
+        else:
+            conn.commit()
+    approved += [(item.lemma, item.approved) for item in suggested if item.approved]
+    would = "would be " if dry_run else ""
+    print(f"{len(entries)} published entries have related links")
+    print(f"{len(suggested)} new suggestions {would or 'were '}made from them")
+    for lemma, key in sorted(approved):
+        print(f"  approved at once: {lemma} -> {key}")
+    print(f"{len(approved)} {would}approved at once; the others wait for you in the console")
+
+
 def _factory(action: str, name: str | None, runs: int) -> None:
     from smart_dictionary.db.sync import connect
     from smart_dictionary.factory import progress
@@ -273,6 +309,13 @@ def main(argv: list[str] | None = None) -> None:
     seeds.add_argument("--limit", type=int, help="queue: at most this many, by priority")
     seeds.add_argument("--dry-run", action="store_true", help="queue: show, change nothing")
 
+    requests = commands.add_parser("requests", help="word requests (design §6.7)")
+    requests.add_argument(
+        "action", choices=["sync"],
+        help="suggest the words published entries link to, and approve what the rule allows",
+    )  # fmt: skip
+    requests.add_argument("--dry-run", action="store_true", help="show, change nothing")
+
     factory = commands.add_parser("factory", help="the factory's progress and tokens")
     factory.add_argument("action", choices=["status", "token", "revoke"])
     factory.add_argument("--name", help="token and revoke: a label such as 'routine'")
@@ -307,6 +350,8 @@ def main(argv: list[str] | None = None) -> None:
         _seeds_queue(args.lemma, args.level, args.limit, args.dry_run)
     elif args.command == "seeds":
         _seeds(args.action, args.file, args.out)
+    elif args.command == "requests":
+        _requests_sync(args.dry_run)
     elif args.command == "factory":
         _factory(args.action, args.name, args.runs)
     elif args.command == "admin":

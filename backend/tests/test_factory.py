@@ -48,6 +48,39 @@ def test_queue_orders_by_level_then_owner_lists_then_frequency(migrated_database
         assert queue(conn) == []
 
 
+def test_a_seed_whose_word_has_an_entry_is_linked_to_it(migrated_database_url):
+    with connect() as conn:
+        world(conn)
+        # A Beta AI wrote for a search before the seeds were queued: hidden, in review.
+        beta = conn.execute(
+            "insert into entries (key, language, lemma, lemma_norm, pos, kind, status, sources,"
+            " published_at) values ('en:go:v', 'en', 'go', 'go', 'verb', 'word', 'provisional',"
+            " array['provisional'], now()) returning id"
+        ).fetchone()
+        conn.execute("insert into word_requests (lemma, lemma_norm, pos, kind, origin, entry_key)"
+                     " values ('go', 'go', 'verb', 'word', 'ai_entry', 'en:go:v')")  # fmt: skip
+        # "run into", added in the console as a verb: the same expression as the seed's.
+        added = conn.execute(
+            "insert into entries (key, language, lemma, lemma_norm, pos, kind, status, sources,"
+            " approved_at, approved_by) values ('en:run_into:v', 'en', 'run into', 'run into',"
+            " 'verb', 'word', 'queued', array['owner:console'], now(), 'lms') returning id"
+        ).fetchone()
+        assert beta is not None and added is not None
+        queued = [item.key for item in queue(conn)]
+        assert queued == ["en:these:pron", "en:realize:v", "en:house:v"]
+        linked = dict(conn.execute(
+            "select lemma, entry_id from seed_candidates where entry_id is not null"
+        ).fetchall())  # fmt: skip
+        assert (linked["go"], linked["run into"]) == (beta[0], added[0])
+        approved = conn.execute(
+            "select key, approved_by from entries where key in ('en:go:v', 'en:run_into:v')"
+            " order by key"
+        ).fetchall()
+        assert approved == [("en:go:v", "seeds"), ("en:run_into:v", "lms")]
+        decided = conn.execute("select status, decided_by from word_requests").fetchone()
+        assert decided == ("approved", "seeds")
+
+
 def test_queue_picks_headwords_levels_and_a_limit(migrated_database_url):
     with connect() as conn:
         world(conn)

@@ -70,7 +70,7 @@ def _describe(tunable: Tunable, settings: Settings, row: Any) -> dict[str, Any]:
     if row is not None:
         with suppress(ValueError):
             override, overridden = tunable.parse(row[0]), True
-    bounded = tunable.kind != "providers"
+    bounded = tunable.kind in ("integer", "number")
     return {
         "name": tunable.name,
         "kind": tunable.kind,

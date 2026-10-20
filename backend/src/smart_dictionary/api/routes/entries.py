@@ -9,6 +9,7 @@ from sqlalchemy import text
 from smart_dictionary.api.auth import current_principal
 from smart_dictionary.api.deps import Connection
 from smart_dictionary.api.errors import ApiError
+from smart_dictionary.content import related
 from smart_dictionary.content.cards import AudioLinks, EntryCard, project_card
 from smart_dictionary.content.visibility import live
 from smart_dictionary.core.keys import parse_key
@@ -61,17 +62,28 @@ async def get_entry(
         base = settings.audio_base_url.rstrip("/")
         for owner, spoken, s3_key in await conn.execute(AUDIO, {"key": key}):
             audio.setdefault(owner, {})[spoken] = f"{base}/{s3_key}"
-    etag = _etag(row.content_version, hidden, chosen, audio)
+    opens = await related.opens(conn, row.doc)
+    etag = _etag(row.content_version, hidden, chosen, audio, opens)
     headers = {"ETag": etag, "Cache-Control": "private, max-age=300", "Vary": "Accept-Encoding"}
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)
     response.headers.update(headers)
-    return project_card(row.doc, variety=chosen, hidden=hidden, zipf=row.freq_zipf, audio=audio)
+    return project_card(row.doc, variety=chosen, hidden=hidden, zipf=row.freq_zipf,
+                        opens=opens, audio=audio)  # fmt: skip
 
 
-def _etag(content_version: int, hidden: set[str], variety: str, audio: AudioLinks) -> str:
-    """Changes with the content, the hidden parts, the variety and the uploaded audio, which
-    arrives after publishing without changing the content version."""
+def _etag(
+    content_version: int,
+    hidden: set[str],
+    variety: str,
+    audio: AudioLinks,
+    opens: dict[str, str],
+) -> str:
+    """Changes with the content, the hidden parts, the variety, the uploaded audio and the
+    related entries a student can open: the last two change after publishing without
+    changing the content version."""
     files = sorted(url for links in audio.values() for url in links.values())
-    state = hashlib.sha256("\n".join([*sorted(hidden), "", *files]).encode()).hexdigest()[:12]
+    links = sorted(f"{key}>{opened}" for key, opened in opens.items())
+    parts = [*sorted(hidden), "", *files, "", *links]
+    state = hashlib.sha256("\n".join(parts).encode()).hexdigest()[:12]
     return f'"{content_version}.{state}.{variety}"'

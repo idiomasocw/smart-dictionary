@@ -1,9 +1,11 @@
 """The card a student sees, projected from a stored entry document (design §4.5).
 
 One student language only [LK-9]; retired senses and teacher-hidden content are
-removed [TF-3]; notes are limited to general ones and the student's language.
+removed [TF-3]; notes are limited to general ones and the student's language. Related links
+show only the entries a student can open (content.related).
 """
 
+from collections.abc import Mapping
 from typing import Any
 
 from pydantic import BaseModel
@@ -111,9 +113,11 @@ def project_card(
     variety: str,
     hidden: set[str],
     zipf: float | None,
+    opens: Mapping[str, str],
     audio: AudioLinks | None = None,
 ) -> EntryCard:
-    """The card; `audio` holds the links of the entry's uploaded audio files, if any."""
+    """The card; `opens` maps each related key a student can open to the key it opens
+    (content.related.opens), and `audio` holds the links of the entry's uploaded files."""
     language = VARIETY_LANGUAGE[variety]
     audio = audio or {}
     senses: list[CardSense] = []
@@ -189,8 +193,21 @@ def project_card(
         ],
         variants=[variant["form"] for variant in doc.get("variants") or []],
         senses=senses,
-        related=[CardRelated(**related) for related in doc.get("related") or []],
+        related=_related(doc, opens),
     )
+
+
+def _related(doc: dict[str, Any], opens: Mapping[str, str]) -> list[CardRelated]:
+    """The links a student can open, each once, never to the entry itself."""
+    shown: list[CardRelated] = []
+    seen: set[tuple[str, str]] = set()
+    for link in doc.get("related") or []:
+        key = opens.get(link["key"])
+        if key is None or key == doc["key"] or (link["type"], key) in seen:
+            continue
+        seen.add((link["type"], key))
+        shown.append(CardRelated(type=link["type"], key=key, note=link.get("note")))
+    return shown
 
 
 def preview(

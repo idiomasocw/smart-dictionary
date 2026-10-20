@@ -2,7 +2,7 @@
 chose; a real word nobody chose can be requested, for the owner to decide.
 
 A lookup that finds nothing still answers at once, decided with SQL only (NF-1):
-- **invalid:** over MAX_WORDS words, a word the reference data doesn't know, or one nobody
+- **invalid:** longer than MAX_WORDS, a word the reference data doesn't know, or one nobody
   chose that can't be requested (typos, nonsense and blocked words end here);
 - **ready:** the word is shown already, under the form `entry_key`;
 - **generating:** an approved word nobody has written yet. One AI job runs after the response
@@ -77,7 +77,10 @@ log = logging.getLogger(__name__)
 # (settings.ai_searches_per_day): a Spanish search counts once, though it may take both.
 AI_TASKS = ["provisional_entry", "translate_query"]
 MIN_ZIPF = 1.0  # wordfreq knows the word at least this well
-MAX_WORDS = 4
+# Words in a search that may stand for an entry. The longest seeded expressions have 10
+# (hit the nail on the head has 6); Spanish ones run longer than their English meaning
+# (estar entre la espada y la pared), and each costs a translation, counted in the quota.
+MAX_WORDS = {"en": 10, "es": 8}
 RETRY_AFTER_MS = 1500
 # Failed attempts (the owner's choices, 2026-10-20).
 COOL_DOWN = "10 minutes"  # "unavailable", with no AI call, after each failure
@@ -278,7 +281,7 @@ async def resolve(
     """What a missed search stands for, in the language searched_in() routed it to."""
     q = query.norm_l1 if language == "es" else query.norm_en
     words = q.split()
-    if not words or len(words) > MAX_WORDS:
+    if not words or len(words) > MAX_WORDS[language]:
         return INVALID
     params = {"words": words, "zipf": MIN_ZIPF, "language": language}
     if not {row[0] for row in await conn.execute(KNOWN, params)}.issuperset(words):

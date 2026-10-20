@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     ai_searches_per_day: int = Field(default=30, ge=0)
     # Words each student can request in 24 hours, for the owner to review (design §6.7).
     word_requests_per_day: int = Field(default=10, ge=0)
+    # A requested or related word is approved at once when a curated list names it and its
+    # part of speech is clear (design §6.7); off, every one waits for the owner. On by
+    # default (owner's choice, 2026-10-20).
+    auto_approve_listed: bool = True
     # Audio (design §10.4). Cards link uploaded files under audio_base_url (the CDN, from
     # SSM). The audio job reads Kokoro from audio_model_dir, writes files to audio_outbox for
     # the host's uploader, and can be held to a few CPU threads.

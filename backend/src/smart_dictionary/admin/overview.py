@@ -80,8 +80,11 @@ def stats(
     ).fetchall()
     requests = dict(
         conn.execute(
-            "select case when status = 'pending' and origin = 'ai_entry' then 'pending_ai_entries'"
-            " else status end, count(*) from word_requests group by 1"
+            "select case when status <> 'pending' or origin = 'student' then status"
+            " when origin = 'ai_entry' then 'pending_ai_entries' else 'pending_related' end,"
+            " count(*) from word_requests group by 1"
+            " union all select 'auto_approved', count(*) from word_requests"
+            " where status = 'approved' and decided_by = 'auto:lists'"
         ).fetchall()
     )
     unapproved = _scalar(
@@ -106,7 +109,14 @@ def stats(
         },
         "requests": {
             name: requests.get(name, 0)
-            for name in ("pending", "pending_ai_entries", "approved", "rejected")
+            for name in (
+                "pending",
+                "pending_ai_entries",
+                "pending_related",
+                "approved",
+                "auto_approved",
+                "rejected",
+            )
         },
         "misses": {
             "by_status": {status: misses.get(status, 0) for status in MISS_STATUSES},

@@ -31,7 +31,7 @@ SELECT = "select name, value from app_settings"
 @dataclass(frozen=True)
 class Tunable:
     name: str
-    kind: Literal["providers", "integer", "number"]
+    kind: Literal["providers", "integer", "number", "boolean"]
     description: str
     minimum: float = 0
     maximum: float = 0
@@ -50,6 +50,10 @@ class Tunable:
             if len(set(names)) < len(names):
                 raise ValueError("a provider is listed twice")
             return names
+        if self.kind == "boolean":
+            if not isinstance(value, bool):
+                raise ValueError("expected true or false")
+            return value
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise ValueError("expected a number")
         if self.kind == "integer" and value != int(value):
@@ -95,6 +99,13 @@ TUNABLES: dict[str, Tunable] = {
             "Words each student can request in 24 hours, for you to review.",
             0,
             50,
+        ),
+        Tunable(
+            "auto_approve_listed",
+            "boolean",
+            "Approve a requested or related word at once when a curated list names it, the"
+            " dictionary has no entry for it and its part of speech is clear. Off: every one"
+            " waits for you.",
         ),
         Tunable(
             "factory_publish_threshold",

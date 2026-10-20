@@ -6,8 +6,12 @@ checks said. An entry publishes, with its projections, when it has no errors, sc
 least the threshold and the in-run reviewer didn't ask for a repair. Otherwise it goes back
 to the queue as `needs_repair` with the issues attached, and after MAX_REPAIRS failed
 repairs it's quarantined. Every submission is kept as a revision, whatever its outcome.
+
+A published entry's links to words the dictionary lacks become suggestions for the owner
+(content.related); a problem there is logged and never holds the entry back.
 """
 
+import logging
 import uuid
 from collections import Counter
 from dataclasses import asdict, dataclass, field
@@ -17,10 +21,14 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from smart_dictionary.content import related
 from smart_dictionary.content.publish import publish
 from smart_dictionary.core.entrydoc import EntryDoc
 from smart_dictionary.core.ids import new_id
+from smart_dictionary.core.settings import get_settings
 from smart_dictionary.factory.validate import Context, Entry, Issue, score, validate
+
+log = logging.getLogger(__name__)
 
 MAX_REPAIRS = 2
 
@@ -92,6 +100,7 @@ def submit(
     provenance = {**produced_by, "source": "routine", "batch_id": str(batch_id),
                   "run_label": batch[1]}  # fmt: skip
     results: list[Result] = []
+    published: list[tuple[str, list[dict[str, Any]]]] = []
     for item in items:
         row = leased.get(item.key)
         if row is None:
@@ -112,6 +121,7 @@ def submit(
         if not checked.errors and checked.score >= threshold and not item.needs_repair:
             doc = EntryDoc.model_validate(item.doc)
             publish(conn, doc, produced_by=provenance, qa=qa, quality=checked.score)
+            published.append((doc.key, [link.model_dump() for link in doc.related]))
             outcome: Outcome = "published"
         else:
             outcome = "needs_repair" if attempts < MAX_REPAIRS else "quarantined"
@@ -119,7 +129,18 @@ def submit(
         results.append(
             Result(checked.key, checked.score, checked.errors, checked.warnings, outcome)
         )
+    _suggest(conn, published)
     return _close(conn, batch_id, results), results
+
+
+def _suggest(conn: psycopg.Connection, published: list[tuple[str, list[dict[str, Any]]]]) -> None:
+    """The published entries' links to missing words, as suggestions; in a savepoint, so a
+    failure here undoes only itself."""
+    try:
+        with conn.transaction():
+            related.suggest(conn, published, tenant=get_settings().default_tenant)
+    except Exception:
+        log.exception("couldn't turn the batch's related links into suggestions")
 
 
 def _checked(key: str, issues: list[Issue], verdict: str | None) -> Checked:

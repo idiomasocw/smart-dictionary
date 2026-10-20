@@ -7,21 +7,29 @@ number of requests (settings.word_requests_per_day, changeable in the console).
 A refusal is an answer, not an error: the student did nothing wrong, and the plugin's
 console stays clean. Only `requested` is 202; every other outcome is 200 with its `status`.
 A refusal writes nothing.
+
+Once the answer has gone, the request may be approved at once (word_requests.auto_approve),
+and then AI writes the word's Beta: the student's next search finds it.
 """
 
+import logging
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Response
 from pydantic import BaseModel, Field
 
 from smart_dictionary.ai import provisional
+from smart_dictionary.ai.gateway import Gateway, get_gateway
 from smart_dictionary.api.auth import CurrentPrincipal
 from smart_dictionary.api.deps import Connection
 from smart_dictionary.api.errors import ApiError
 from smart_dictionary.content import word_requests
 from smart_dictionary.core import tunables
 from smart_dictionary.core.settings import L1Variety, Settings, get_settings
+from smart_dictionary.db.sync import connect
 from smart_dictionary.search.service import Direction, Query
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1", tags=["requests"])
 
@@ -59,6 +67,8 @@ async def request_word(
     conn: Connection,
     principal: CurrentPrincipal,
     settings: Annotated[Settings, Depends(get_settings)],
+    gateway: Annotated[Gateway, Depends(get_gateway)],
+    background: BackgroundTasks,
 ) -> RequestOut:
     if any(ord(ch) < 32 for ch in body.q):
         raise ApiError(400, "invalid_query", "The query contains control characters")
@@ -90,5 +100,26 @@ async def request_word(
         await conn.rollback()
         return RequestOut(status="not_requestable")
     await conn.commit()
+    background.add_task(_approve_at_once, found.candidate.lemma_norm, principal.tenant, gateway)
     response.status_code = 202
     return RequestOut(status="requested", headword=found.candidate.lemma)
+
+
+def _approve_at_once(lemma_norm: str, tenant: str, gateway: Gateway) -> None:
+    """After the answer: approve the request when the rule allows it, and have AI write the
+    word's Beta. A failure only leaves the request for the owner."""
+    try:
+        with connect() as conn:
+            row = conn.execute(
+                "select id from word_requests where lemma_norm = %s", (lemma_norm,)
+            ).fetchone()
+            approved = word_requests.auto_approve(conn, row[0], tenant=tenant) if row else None
+            conn.commit()
+            writes = approved is not None and approved.write_now
+            if not (writes and gateway.chain(tunables.overrides(conn))):
+                return
+        assert approved is not None
+        job = provisional.Job(query=lemma_norm, tenant=tenant, user_id=None, key=approved.key)
+        provisional.generate(job, gateway)
+    except Exception:
+        log.exception("couldn't decide the request for %r at once", lemma_norm)

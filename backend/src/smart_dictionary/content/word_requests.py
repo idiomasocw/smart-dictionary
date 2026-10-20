@@ -10,6 +10,15 @@ searches for gets no entry; when it's a real headword, the student may request i
 - **The owner decides** in the console. Approving queues the word, approved and first in the
   factory's queue, and AI writes its Beta at once. Rejecting closes it for good, and retires
   any unapproved entry AI wrote for it before reviews existed (origin `ai_entry`).
+- **Related words** an entry links to that the dictionary lacks wait here too (origin
+  `related`, content.related), with the links that named them.
+- **Approved at once** (auto_approve, the `auto_approve_listed` setting, on by default): a
+  student's request or a related word, when a curated list names it, the dictionary has no
+  entry for it and its part of speech is clear. Anything less clear waits for the owner.
+- **One multiword expression, one entry:** approving or adding one is refused while an approved
+  entry has the same expression under another kind, or with or without its leading article
+  (`expression_of`, migration 0013). One headword of one kind under two parts of speech is
+  two entries on purpose: *a few* as a determiner and as a pronoun.
 """
 
 from dataclasses import dataclass, field
@@ -22,12 +31,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from smart_dictionary.content.visibility import live
+from smart_dictionary.core import tunables
 from smart_dictionary.core.entrydoc import KIND_POS
 from smart_dictionary.core.ids import new_id
 from smart_dictionary.core.keys import entry_key
 from smart_dictionary.core.principal import Principal
+from smart_dictionary.core.settings import get_settings
 from smart_dictionary.core.text import norm
-from smart_dictionary.factory.queue import ASKED_PRIORITY
+from smart_dictionary.factory.queue import ASKED_PRIORITY, easiest, priority
 from smart_dictionary.factory.validate import BLOCKED
 
 # Suggestions put the commonest parts of speech first.
@@ -96,13 +107,14 @@ class Candidate:
         return self.options[0][1] if self.options else None
 
 
-# A leading article a headword is usually listed without: the last straw → last straw.
+# A leading article a headword may be listed with or without: the last straw, last straw.
 ARTICLES = ("a", "an", "the")
 
 
 def headwords(query: str) -> list[str]:
     """The dictionary forms a normalized search may stand for, the search itself first:
-    geese → goose, gave up → give up, the last straw → last straw."""
+    geese → goose, gave up → give up, the last straw → last straw, last straw → the last
+    straw. A leading article goes only while two words remain (a few stays a few)."""
     words = query.split()
     if not words:
         return []
@@ -110,17 +122,19 @@ def headwords(query: str) -> list[str]:
     forms = [query, *(" ".join([lemma, *words[1:]]) for lemma in lemmas)]
     if len(words) > 2 and words[0] in ARTICLES:
         forms.append(" ".join(words[1:]))
+    elif len(words) > 1 and words[0] not in ARTICLES:
+        forms += [f"the {query}", f"{'an' if query[0] in 'aeiou' else 'a'} {query}"]
     return list(dict.fromkeys(norm(form) for form in forms))
 
 
 async def requestable(conn: AsyncConnection, lemmas: list[str]) -> Candidate | None:
     rows = (await conn.execute(REQUESTABLE, {"lemmas": lemmas})).all()
-    return _candidate(lemmas, rows)
+    return candidate(lemmas, rows)
 
 
 def requestable_sync(conn: psycopg.Connection, lemmas: list[str]) -> Candidate | None:
     rows = conn.execute(REQUESTABLE_SYNC, {"lemmas": lemmas}).fetchall()  # pyright: ignore[reportArgumentType]
-    return _candidate(lemmas, rows)
+    return candidate(lemmas, rows)
 
 
 async def status_for(
@@ -180,7 +194,21 @@ class Conflict(Exception):
 @dataclass(frozen=True)
 class Approved:
     key: str
-    write_now: bool  # nobody has written it: AI may write its Beta at once
+    write_now: bool  # a student waits and nobody has written it: AI may write its Beta at once
+
+
+# An entry for the same multiword expression under another kind, or with or without its
+# article. The same headword and kind under another part of speech isn't one (a few).
+_TWIN = """
+select key from entries
+where language = 'en' and status <> 'retired' {approved}
+  and expression_of(lemma_norm) = expression_of(%(lemma)s) and key <> %(key)s
+  and strpos(%(lemma)s, ' ') > 0
+  and (lemma_norm <> %(lemma)s or kind::text <> %(kind)s)
+order by approved_at is null, key limit 1
+"""
+APPROVED_TWIN = _TWIN.format(approved="and approved_at is not null")
+TWIN = _TWIN.format(approved="")
 
 
 def approve(
@@ -193,11 +221,14 @@ def approve(
     decided_by: str,
     note: str | None,
     tenant: str,
+    asked: bool = True,
 ) -> Approved:
     """Approve the headword as `pos` and `kind`: its entry is queued (or kept, when one
     exists) and approved, first in the factory's queue. Other unapproved entries AI made for
-    the same headword are retired. LookupError: no such request; ValueError: the headword or
-    its part of speech can't make an entry; Conflict: decided already, or its key retired."""
+    the same headword or expression are retired. `asked=False`: nobody waits for it (a
+    related word), so it takes its natural place in the queue and no Beta is written now.
+    LookupError: no such request; ValueError: the headword or its part of speech can't make
+    an entry; Conflict: decided already, its key retired, or an approved twin exists."""
     request = _locked(conn, request_id)
     if norm(lemma) != request["lemma_norm"]:
         raise ValueError(f"the headword must be {request['lemma']!r}, as requested")
@@ -211,21 +242,26 @@ def approve(
     ).fetchone()
     if existing is not None and existing[0] == "retired":
         raise Conflict(f"{key} was retired, and keys are never reused")
+    params = {"lemma": request["lemma_norm"], "key": key, "kind": kind}
+    twin = conn.execute(APPROVED_TWIN, params).fetchone()
+    if twin is not None:
+        raise Conflict(f"{twin[0]} is the same expression; retire one of them, or reject this")
+    conn.execute(
+        "update entries set status = 'retired', updated_at = now()"
+        " where language = 'en' and expression_of(lemma_norm) = expression_of(%s)"
+        " and key <> %s and approved_at is null and status <> 'retired'",
+        (request["lemma_norm"], key),
+    )
     if existing is None:
-        queue_approved(conn, key, lemma, pos, kind, approved_by=decided_by, sources=["request"])
+        queue_approved(conn, key, lemma, pos, kind, approved_by=decided_by, sources=["request"],
+                       asked=asked)  # fmt: skip
     else:
         conn.execute(
             "update entries set approved_at = coalesce(approved_at, now()),"
             " approved_by = coalesce(approved_by, %s), priority = greatest(priority, %s),"
             " updated_at = now() where key = %s",
-            (decided_by, ASKED_PRIORITY, key),
+            (decided_by, ASKED_PRIORITY if asked else 0, key),
         )
-    conn.execute(
-        "update entries set status = 'retired', updated_at = now()"
-        " where language = 'en' and lemma_norm = %s and key <> %s and approved_at is null"
-        " and status <> 'retired'",
-        (request["lemma_norm"], key),
-    )
     conn.execute(
         "update word_requests set status = 'approved', lemma = %s, pos = %s, kind = %s,"
         " entry_key = %s, decided_at = now(), decided_by = %s, note = %s where id = %s",
@@ -233,7 +269,7 @@ def approve(
     )
     shown = existing is not None and existing[1]
     _reopen(conn, request, key, shown)
-    write_now = not shown and (existing is None or existing[0] in ("candidate", "queued"))
+    write_now = asked and not shown and (existing is None or existing[0] in ("candidate", "queued"))
     if write_now:
         conn.execute(
             "insert into misses (tenant_id, language, query_norm, hits) values (%s, 'en', %s, 0)"
@@ -253,26 +289,37 @@ def queue_approved(
     *,
     approved_by: str,
     sources: list[str],
+    asked: bool = True,
 ) -> None:
-    """A new entry the owner chose, queued first in the factory's queue. Conflict: the same
-    expression exists as another multiword kind (an idiom beside a phrase)."""
-    twin = conn.execute(
-        "select key from entries where language = 'en' and lemma_norm = %s and pos = %s"
-        " and kind::text <> %s and kind <> 'word' and %s <> 'word' and status <> 'retired'",
-        (norm(lemma), pos, kind, kind),
-    ).fetchone()
+    """A new entry the owner chose, queued first in the factory's queue, or (`asked=False`)
+    where its level and frequency put it. Conflict: the same multiword expression has an
+    entry (an idiom beside a phrase, last straw beside the last straw)."""
+    twin = conn.execute(TWIN, {"lemma": norm(lemma), "key": key, "kind": kind}).fetchone()
     if twin is not None:
         raise Conflict(f"{twin[0]} is the same expression")
-    zipf = conn.execute(
-        "select max(zipf) from ref_freq where language = 'en' and word = %s", (norm(lemma),)
+    facts = conn.execute(
+        "select (select max(zipf) from ref_freq where language = 'en' and word = %(w)s),"
+        " array(select distinct level from ref_lists where lemma_norm = %(w)s"
+        " and level is not null)",
+        {"w": norm(lemma)},
     ).fetchone()
+    zipf, levels = facts if facts else (None, [])
+    rank = ASKED_PRIORITY if asked else priority(levels, None, zipf)
+    entry_id = new_id()
     conn.execute(
-        "insert into entries (id, key, language, lemma, lemma_norm, pos, kind, homograph,"
+        "insert into entries (id, key, language, lemma, lemma_norm, pos, kind, homograph, cefr,"
         " freq_zipf, priority, status, sources, approved_at, approved_by)"
-        " values (%s, %s, 'en', %s, %s, %s, %s, 1, %s, %s, 'queued', %s, now(), %s)",
-        (new_id(), key, lemma, norm(lemma), pos, kind, zipf[0] if zipf else None,
-         ASKED_PRIORITY, sources, approved_by),
+        " values (%s, %s, 'en', %s, %s, %s, %s, 1, %s, %s, %s, 'queued', %s, now(), %s)",
+        (entry_id, key, lemma, norm(lemma), pos, kind, easiest(levels), zipf, rank, sources,
+         approved_by),
     )  # fmt: skip
+    # A seed for the same word that was never queued (it waited for curation) is this entry's.
+    conn.execute(
+        "update seed_candidates set entry_id = %s, decision = 'accept', updated_at = now()"
+        " where entry_id is null and lemma_norm = %s and pos = %s and kind = %s::entry_kind"
+        " and homograph = 1 and coalesce(decision, 'accept') = 'accept'",
+        (entry_id, norm(lemma), pos, kind),
+    )
 
 
 def reject(
@@ -309,6 +356,104 @@ def reject(
          "id": request["id"]},
     )  # fmt: skip
     return retired
+
+
+# Approved at once ---------------------------------------------------------------------------
+
+AUTO_BY = "auto:lists"
+
+# What decides an approval at once: the lists that name the headword (and the parts of speech
+# the CEFR lists give it), its seeds, Wiktionary's parts of speech, and any entry it has.
+EVIDENCE = """
+select array(select distinct l.dataset_id from ref_lists l
+             where l.lemma_norm = %(lemma)s order by 1) as lists,
+       array(select distinct l.pos from ref_lists l
+             where l.lemma_norm = %(lemma)s and l.pos is not null) as list_pos,
+       exists (select from seed_candidates c where c.lemma_norm = %(lemma)s
+               and coalesce(c.decision, 'accept') = 'accept') as seeded,
+       array(select distinct c.pos || '/' || c.kind from seed_candidates c
+             where c.lemma_norm = %(lemma)s and c.pos is not null and c.kind is not null
+               and coalesce(c.decision, 'accept') = 'accept') as seeds,
+       array(select distinct k.pos || '/' || k.kind from ref_wiktionary k
+             where k.word_norm = %(lemma)s) as wiktionary,
+       exists (select from entries e where e.language = 'en'
+               and expression_of(e.lemma_norm) = expression_of(%(lemma)s)) as has_entry
+"""
+
+
+def auto_approve(
+    conn: psycopg.Connection,
+    request_id: Any,
+    *,
+    tenant: str,
+    hint: tuple[str, str] | None = None,
+) -> Approved | None:
+    """Approve a pending student or related request at once, as `auto:lists`, when the
+    owner's rule allows it (the `auto_approve_listed` setting): a curated list or a seed names
+    the headword, the dictionary has no entry for it (any part of speech, retired included),
+    and its part of speech and kind are clear. `hint` is the one a link gave it. None: it
+    waits for the owner. The caller commits; a refusal changes nothing."""
+    allowed = tunables.overrides(conn).get(
+        "auto_approve_listed", get_settings().auto_approve_listed
+    )
+    if not allowed:
+        return None
+    request = _locked(conn, request_id)
+    if request["status"] != "pending" or request["origin"] == "ai_entry":
+        return None
+    with conn.cursor(row_factory=dict_row) as cursor:
+        found = cursor.execute(EVIDENCE, {"lemma": request["lemma_norm"]}).fetchone()
+    if found is None or found["has_entry"] or not (found["lists"] or found["seeded"]):
+        return None
+    if BLOCKED.intersection(request["lemma_norm"].split()):
+        return None
+    clear = _clear_pos(found["seeds"], hint, found["list_pos"], found["wiktionary"])
+    if clear is None:
+        return None
+    pos, kind, why = clear
+    named = ", ".join(found["lists"]) or "the seed lists"
+    try:
+        with conn.transaction():  # a savepoint: a refusal leaves the request as it was
+            return approve(conn, request_id, lemma=request["lemma"], pos=pos, kind=kind,
+                           decided_by=AUTO_BY, note=f"auto: on {named}; {pos}/{kind} {why}",
+                           tenant=tenant, asked=request["students"] > 0)  # fmt: skip
+    except (Conflict, ValueError):
+        return None
+
+
+def _clear_pos(
+    seeds: list[str], hint: tuple[str, str] | None, list_pos: list[str], wiktionary: list[str]
+) -> tuple[str, str, str] | None:
+    """The part of speech and kind, with where they came from, when only one fits: the seed's,
+    else the link's when Wiktionary agrees, else Wiktionary's one option under the part of
+    speech the CEFR lists give, else Wiktionary's only option."""
+    seeded = {pair for seed in seeds if (pair := _pair(seed)) is not None}
+    if len(seeded) == 1:
+        [(pos, kind)] = seeded
+        return pos, kind, "from its seed"
+    options = [(option["pos"], option["kind"]) for option in _options(wiktionary)]
+    options = [option for option in options if _forms_entry(*option)]
+    if hint is not None and hint in options:
+        return hint[0], hint[1], "from the link, as Wiktionary has it"
+    listed = [option for option in options if option[0] in list_pos]
+    if len(listed) == 1:
+        return listed[0][0], listed[0][1], "from the lists and Wiktionary"
+    if len(options) == 1:
+        return options[0][0], options[0][1], "from Wiktionary, its only one"
+    return None
+
+
+def _pair(value: str) -> tuple[str, str] | None:
+    pos, _, kind = value.partition("/")
+    pos = KIND_POS.get(kind, pos)
+    return (pos, kind) if _forms_entry(pos, kind) else None
+
+
+def _forms_entry(pos: str, kind: str) -> bool:
+    """The part of speech and kind can make an entry, as the seed queue requires."""
+    if kind == "word":
+        return pos != "phrase"
+    return pos == ("verb" if kind == "phrasal_verb" else "phrase")
 
 
 def listing(
@@ -363,15 +508,22 @@ select r.id, r.lemma, r.pos, r.kind::text as kind, r.origin, r.status, r.entry_k
              where k.word_norm = r.lemma_norm) as wiktionary,
        (select e.doc #>> '{{senses,0,definition}}' from entries e
         where e.key = r.entry_key) as definition,
-       (select {live()} from entries e where e.key = r.entry_key) as shown
+       (select {live()} from entries e where e.key = r.entry_key) as shown,
+       array(select e.key from entries e
+             where e.language = 'en' and e.status <> 'retired'
+               and expression_of(e.lemma_norm) = expression_of(r.lemma_norm)
+               and e.key is distinct from r.entry_key
+             order by e.key) as twins,
+       array(select l.entry_key || ' ' || l.type from word_request_links l
+             where l.request_id = r.id order by l.created_at, l.entry_key limit 10) as linked_from
 """
 
 
 def _locked(conn: psycopg.Connection, request_id: Any) -> dict[str, Any]:
     with conn.cursor(row_factory=dict_row) as cursor:
         request = cursor.execute(
-            "select id, lemma, lemma_norm, status, origin, entry_key from word_requests"
-            " where id = %s for update",
+            "select id, lemma, lemma_norm, status, origin, entry_key, students"
+            " from word_requests where id = %s for update",
             (request_id,),
         ).fetchone()
     if request is None:
@@ -396,7 +548,7 @@ def _reopen(conn: psycopg.Connection, request: dict[str, Any], key: str, shown: 
     )  # fmt: skip
 
 
-def _candidate(lemmas: list[str], rows: Any) -> Candidate | None:
+def candidate(lemmas: list[str], rows: Any) -> Candidate | None:
     for lemma in lemmas:
         if BLOCKED.intersection(lemma.split()):
             continue

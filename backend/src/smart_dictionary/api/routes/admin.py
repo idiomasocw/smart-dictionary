@@ -46,7 +46,7 @@ EntryStatus = Literal["published", "provisional", "generating", "validating", "q
                       "needs_repair", "quarantined", "candidate", "retired"]  # fmt: skip
 MissStatus = Literal["pending", "provisional", "published", "queued", "requestable", "invalid"]
 RequestStatus = Literal["pending", "approved", "rejected"]
-Origin = Literal["student", "ai_entry"]
+Origin = Literal["student", "ai_entry", "related"]
 # The LMS's person ID (a UUID): no names or emails, which the dictionary never stores.
 Actor = Annotated[
     str | None,
@@ -122,7 +122,9 @@ class Run(BaseModel):
 class RequestStats(BaseModel):
     pending: int = Field(description="students' requests waiting for you")
     pending_ai_entries: int = Field(description="AI entries from before reviews, waiting")
+    pending_related: int = Field(description="words entries link to, waiting")
     approved: int
+    auto_approved: int = Field(description="of the approved, those approved at once (auto:lists)")
     rejected: int
 
 
@@ -218,7 +220,10 @@ class RequestRow(BaseModel):
     lemma: str
     pos: str | None = Field(description="the suggestion, or what was approved")
     kind: str | None
-    origin: Origin = Field(description="ai_entry: a Beta AI wrote before reviews, now hidden")
+    origin: Origin = Field(
+        description="student: asked for; ai_entry: a Beta AI wrote before reviews, now hidden;"
+        " related: an entry links to it"
+    )
     status: RequestStatus
     entry_key: str | None
     students: int = Field(description="how many asked, never which")
@@ -229,6 +234,13 @@ class RequestRow(BaseModel):
     seed_decisions: list[str] = Field(description="its seed candidates' curation decisions")
     options: list[PosKind] = Field(description="Wiktionary's parts of speech, likeliest first")
     definition: str | None = Field(description="ai_entry: the hidden Beta's first definition")
+    twins: list[str] = Field(
+        description="the dictionary's other entries for this headword: for a multiword one,"
+        " under any kind or with or without its article. An approved one blocks approval"
+    )
+    linked_from: list[str] = Field(
+        description="related: up to 10 of the entries that link to it, as 'key type'"
+    )
     first_asked_at: datetime
     last_asked_at: datetime
     decided_at: datetime | None
@@ -272,7 +284,7 @@ class EntryAction(BaseModel):
 
 class SettingOut(BaseModel):
     name: str
-    kind: Literal["providers", "integer", "number"]
+    kind: Literal["providers", "integer", "number", "boolean"]
     description: str
     minimum: float | None
     maximum: float | None
