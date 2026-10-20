@@ -460,6 +460,24 @@ class EntryDoc(BaseModel):
 
 **Filled by the server, not the AI:** frequency band, inflected forms of the lemma and of each spelling variant (UniMorph/LemmInflect: *realise* → *realised*), audio, embeddings, L1 forms, and `quality`. The AI may add irregular forms and spelling variants, which the validators then check.
 
+### 3.6 Duplicates: what's expected and what isn't
+
+One entry per headword, part of speech and meaning (the owner's headword policy, 2026-10-18), because many forms point to one entry, and a second entry splits saved words and the factory's work.
+
+**Expected:**
+- **One entry per part of speech:** *a few* as a determiner and as a pronoun, *house* as a noun and a verb. A key holds the part of speech, and so does the card.
+- **Homographs in other capitals that are other words:** *Pole* and *pole*, *March* and *march*, *IT* and *it*. The second takes `~2` in its key.
+- **Expressions that share words but not meaning:** *few* and *a few*, *make a point* and *make a point of*, *go out* and *go out with*.
+
+**Duplicates, to retire:**
+- **The same word in other capitals:** *cd* and *CD*.
+- **One expression under two kinds:** *by the way* as an idiom and as a phrase. `seeds queue` now refuses the second kind, and so does the console's Add.
+- **Hyphen against space:** *face to face* and *face-to-face*. Keep the hyphenated one: its forms include the spaced spelling (`spacing_variants`).
+- **A preposition that's only a complement:** *brush up* and *brush up on*. Keep one entry, and let the preposition be a pattern.
+- **A UK spelling seeded on its own:** *computerise* beside *computerize*. Retire it, and list it as the US seed's variant.
+
+**Audit:** `docs/queries/duplicates.sql` lists each kind, for the owner to judge. The owner retires duplicates in the console (`POST /v1/admin/entries/{key}/retire`, §5.5), or in bulk with a reviewed script such as `docs/queries/duplicates-fix-2026-10-20.sql`. A retired key is never reused.
+
 ---
 
 ## 4. Search and lookup
@@ -650,6 +668,11 @@ The audit's admin dashboard (§12 there) arrives as a console inside the LMS, wh
 
 - `GET /v1/admin/requests`, with `POST …/approve` and `…/reject`: the word-request queue (§6.7).
 
+**What it does to single entries** (`admin/curation.py`), each audited (`entry.add`, `entry.retire`, `entry.requeue`):
+- **`POST /v1/admin/entries`** `{lemma, pos, kind, note?}`: add a word, queued and approved, first in the factory's queue. A pending request for it is approved with it. It refuses a key that exists, or the same expression under another kind.
+- **`POST /v1/admin/entries/{key}/retire`** `{note?}`: take a duplicate or an unwanted word out of the dictionary. Its key is kept forever, searches that pointed to it answer "not found", and students can't request it. Not while the routine is writing it.
+- **`POST /v1/admin/entries/{key}/requeue`** `{note?}`: give a quarantined entry another go once its cause is fixed. Its attempts reset, and it goes back to the queue, or to the Beta rewrites when it has a Beta.
+
 It never names a student: AI use is counted per search, and the console sees how many students reached the daily cap, never which. A request shows how many students asked and what they searched, never who.
 
 **What it changes:** the decision on a word request (§6.7), and the settings in `core/tunables.py`, each with tighter bounds than the environment allows. A leaked token can turn AI off or move the cap, but can't run up a bill or read a key.
@@ -803,7 +826,7 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
 | V7 | Valid IPA charset; normalized edit distance to CMUdict/Britfone ≤ 0.35 | warn |
 | V8 | No duplicate senses (sense-embedding cosine < 0.92) | warn |
 | V9 | No 8-gram overlap with Wiktionary glosses | error |
-| V10 | Safety: blocklists for sexual, violent and hate content in examples; offensive senses labeled | error |
+| V10 | Safety: blocklists for sexual, violent and hate content in examples, except the headword's own forms (*kill* in the entry for *kill*); offensive senses labeled | error |
 | V11 | Counts: 1–6 senses, 2–3 examples, ≤ 6 collocations, ≤ 3 notes per sense | error |
 
 - **Quality score** = weighted warnings + reviewer verdicts (+ spot-check results when present). An entry **publishes** if there are no errors and the score is ≥ τ, with τ calibrated on the golden set.
@@ -842,7 +865,7 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
 **AI writes a Beta entry only for a word the owner chose** (the owner's rule, 2026-10-20). A word is chosen when it's seeded (the curated lists, through `seeds queue`) or approved in the console (§6.7). Every other word a student searches for gets no AI entry: a real headword becomes requestable, and the rest is "not found". A student's search can never add a word to the dictionary on its own.
 
 **The lookup decides with SQL only** and answers at once (`ai/provisional.py`, `resolve()`):
-1. **The gate:** at most 4 words, none blocked, each known to the reference data in the search's language (`ref_freq` Zipf ≥ 1.0, `ref_forms`, or English Wiktionary). Anything else is `invalid`.
+1. **The gate:** at most 4 words, each known to the reference data in the search's language (`ref_freq` Zipf ≥ 1.0, `ref_forms`, or English Wiktionary). Anything else is `invalid`. A blocked word passes only when the owner chose it (*kill*, an A1 verb); nobody can request one.
 2. **The entries it may stand for:** the search and its dictionary forms (*geese* → *goose*, *gave up* → *give up*, lemminflect), matched against `entries.lemma_norm`. The best one decides:
    - **shown already** under another form: `ready`, with its key;
    - **approved, and nobody has written it** (`candidate`, `queued`): `generating`, and one AI job writes it after the response;
@@ -850,11 +873,12 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
    - **none approved:** the request check (§6.7) answers `requestable` or `requested` with the headword, or `invalid`.
 3. **The quota** counts each student's searches that reached AI over the last 24 hours (distinct `ref_key`s of successful calls), 30 by default (`AI_SEARCHES_PER_DAY`, or the console), so a Spanish search that takes two calls counts once.
 
-**Generating** (`provisional_entry.v2`):
+**Generating** (`provisional_entry.v3`):
 - **The headword comes from the seed, never from the model.** The model is told the lemma, part of speech and kind, and writes only the senses: 1–2, one example each, with the es-419 layer. A model can't drift to another word, correct a typo into a headword, or invent one.
-- **The model may decline** a headword it can't show within the content rules (`unsuitable`). A refusal can't improve with retries, so the word goes straight to the factory.
+- **Hard topics get entries.** A headword like *kill*, *bomb* or *drunk* is written in calm, factual, non-graphic sentences. Only a sexual or vulgar headword whose main meaning can't be shown within the content rules is declined (`unsuitable`). A refusal can't improve with retries, so the word goes straight to the factory.
 - **The server builds the document** around the senses: the seed's key, pronunciations from CMUdict and Britfone, a multiword entry's pattern, and `provisional: true`.
 - **Checks:** all of V1–V11, with V11's counts for a short entry. Errors block; warnings lower `quality`. The search must be one of the document's forms.
+- **A sense that fails is dropped, not the draft.** When every error lies inside some senses and another sense is clean, the clean senses publish, and the revision's `qa.dropped_senses` records why. Before this, *give me a break* failed its first attempt on its second sense's gloss, over the 5-word limit, and waited out the 10-minute cool-down.
 - **It never replaces the routine's work.** It publishes only while the entry is still approved and unwritten, keeping its queue priority and seed sources. Provisional entries are leased first (`QUEUE_ORDER`).
 - **One job at a time:** the lookup that starts a job claims the miss (`misses.running_since`), so other lookups answer `generating` without starting another. A claim older than 3 minutes expires; an advisory lock per query backs it up.
 

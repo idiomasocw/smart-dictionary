@@ -121,6 +121,9 @@ All `GET` unless marked. Pages are numbered from 1, `per_page` is at most 200 (d
 | `/v1/admin/entries` | `letter` (`a`–`z`, or `other` for digits and symbols), `status`, `q` (the start of the headword, any case or accents), `sort` (`lemma` or `updated`, the newest change first), `page`, `per_page` | Entries: `key`, `lemma`, `pos`, `kind`, `homograph`, `cefr`, `status`, `approved` (false: hidden, waiting for a request's decision), `quality`, `attempts`, `definition` (the first sense's, null until written), `senses`, `problems` (why the latest submission was sent back, for `needs_repair` and `quarantined`), `updated_at`, `published_at` |
 | `/v1/admin/entries/letters` | `status` | 27 rows, `a`–`z` then `other`, each with its `count`, zeros included |
 | `/v1/admin/entries/{key}` | — | One entry's row, plus `priority`, `freq_zipf`, `sources`, `created_at`, `lease_expires_at`, the full `doc` (null until written), and its last 20 `revisions`, each with `outcome`, `score`, `problems`, `warnings`, `produced_by` and the full `qa` |
+| `POST /v1/admin/entries` | Body `{"lemma", "pos", "kind", "note"?}`, header `X-Admin-Actor` | **201**: the new entry, as `/entries/{key}` returns it: queued, approved, first in the factory's queue. A pending request for the word is approved with it |
+| `POST /v1/admin/entries/{key}/retire` | Body `{"note"?}`, header `X-Admin-Actor` | The entry, `retired`: out of the dictionary for good, its key never reused. For duplicates and unwanted words |
+| `POST /v1/admin/entries/{key}/requeue` | Body `{"note"?}`, header `X-Admin-Actor` | The entry, back in the queue with its attempts reset. Only for `quarantined` entries, once their cause is fixed |
 | `/v1/admin/misses` | `status`, `stuck` (`true`: AI gave up and no seed covers the word), `q`, `page`, `per_page` | Missed searches, the latest first: `tenant`, `language`, `query`, `hits`, `status`, `entry_key`, `attempts`, `stuck`, `last_error`, `first_seen`, `last_seen`, `last_attempt_at` |
 | `/v1/admin/requests` | `status` (`pending` by default, `approved`, `rejected`), `origin` (`student`, `ai_entry`), `q`, `page`, `per_page` | Word requests, pending first and most asked first: `id`, `lemma`, `pos` and `kind` (the suggestion, or what was approved), `origin`, `status`, `entry_key`, `students` (how many asked), `searches`, `queries` (up to 5 searches that led here), `zipf`, `lists` (open lists naming it, with their level), `seed_decisions`, `options` (Wiktionary's `{pos, kind}`, likeliest first), `definition` (for `ai_entry`: the hidden Beta's), `first_asked_at`, `last_asked_at`, `decided_at`, `decided_by`, `note` |
 | `POST /v1/admin/requests/{id}/approve` | Body `{"lemma", "pos", "kind", "note"?}`, header `X-Admin-Actor` | The request, `approved`, with its `entry_key`. The word is queued first in the factory's queue, and AI writes its Beta at once |
@@ -128,7 +131,7 @@ All `GET` unless marked. Pages are numbered from 1, `per_page` is at most 200 (d
 | `/v1/admin/settings` | — | `settings` (below), `known_providers`, `providers_with_keys` and `applies_within_seconds` |
 | `PUT /v1/admin/settings/{name}` | Body `{"value": …}`, header `X-Admin-Actor` | The setting as it is now |
 | `DELETE /v1/admin/settings/{name}` | Header `X-Admin-Actor` | The setting, back on its default |
-| `/v1/admin/audit` | `page`, `per_page` | Changes, newest first: `created_at`, `client`, `actor`, `action` (`setting.set`, `setting.reset`, `request.approve` or `request.reject`), `target`, `before`, `after` |
+| `/v1/admin/audit` | `page`, `per_page` | Changes, newest first: `created_at`, `client`, `actor`, `action` (`setting.set`, `setting.reset`, `request.approve`, `request.reject`, `entry.add`, `entry.retire` or `entry.requeue`), `target`, `before`, `after` |
 
 Entry statuses: `published`, `provisional`, `generating`, `validating`, `queued`, `needs_repair`, `quarantined`, `candidate`, `retired`. Missed-search statuses: `pending`, `provisional`, `published`, `queued`, `requestable`, `invalid`. Request statuses: `pending`, `approved`, `rejected`; origins: `student` (students asked) and `ai_entry` (a Beta AI wrote before reviews existed, hidden until decided).
 
@@ -185,7 +188,7 @@ RFC 9457 `application/problem+json`, with a stable `code`:
 |---|---|---|---|
 | 401 | `unauthorized` | Missing, wrong or revoked token | "The dictionary rejected the console's token": an operator problem, not the user's |
 | 404 | `not_found` | No such entry, request or setting; also any call from an address outside `ADMIN_ALLOWED_IPS` | "Not found" |
-| 409 | `conflict` | The request was decided already, or its key was retired; `detail` says which | `detail`, then reload the request |
+| 409 | `conflict` | A request decided already, or its key retired; an entry that exists already, or exists under another kind (`detail` names it); retiring one the routine is writing now; requeuing one that isn't quarantined | `detail`, then reload |
 | 422 | `invalid_value` | A setting out of bounds, or an approval whose headword or part of speech can't make an entry; `detail` says why, e.g. `expected a value from 0 to 50` | `detail`, next to the field |
 | 422 | `invalid_request` | A bad parameter, body or `X-Admin-Actor` | A bug in the LMS: log it |
 
@@ -217,4 +220,5 @@ Each becomes its own section here before anyone implements it.
 - [ ] L6: the LMS calls only the listed paths, and validates `letter`, `status`, `q`, `page` and `per_page` before passing them on.
 - [ ] L6: every `PUT`, `DELETE` and `POST` sends `X-Admin-Actor` with the signed-in person's ID.
 - [ ] L6: approving and rejecting a request each ask for confirmation in the LMS's own modal, and show the 409 `detail` when it was decided elsewhere.
+- [ ] L6: Add, Retire and Requeue each confirm in the LMS's own modal; Retire says it can't be undone.
 - [ ] L6: a dictionary 401, 404, 422 or timeout shows a message and never breaks the rest of the LMS.
