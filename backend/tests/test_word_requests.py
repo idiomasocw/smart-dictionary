@@ -75,15 +75,17 @@ def test_a_student_requests_a_real_word_once_within_a_daily_limit(
             conn.execute("insert into app_settings (name, value, updated_by)"
                          " values ('word_requests_per_day', '1', 'lms')")  # fmt: skip
         tunables.forget()
+        # A refusal is an answer, not an error (the plugin's console stays clean).
         refused = ask(client, "pie")
-        assert (refused.status_code, refused.json()["code"]) == (429, "quota_exceeded")
+        assert (refused.status_code, refused.json()["status"]) == (200, "quota_exceeded")
         assert row("select count(*) from word_requests where lemma_norm = 'pie'") == (0,)
 
         # Typos and nonsense can't be requested, and nobody anonymous can request at all.
         for typo in ("recieve", "zzqxv"):
             wrong = ask(client, typo)
-            assert (wrong.status_code, wrong.json()["code"]) == (422, "not_requestable")
-        assert ask(client, "pie", headers={}).status_code == 403
+            assert (wrong.status_code, wrong.json()["status"]) == (200, "not_requestable")
+        anonymous = ask(client, "pie", headers={})
+        assert (anonymous.status_code, anonymous.json()["status"]) == (200, "no_student")
     votes = row("select array_agg(query order by query) from word_request_votes")
     assert votes == (["kettle", "kettles"],)  # the searches, never a name
 
@@ -150,7 +152,8 @@ def test_a_rejected_word_is_closed_for_good(migrated_database_url, anyio_backend
         assert lookup(client, "pie")["provisional"]["status"] == "invalid"
         other = client.get("/v1/lookup", params={"q": "pie"}, headers=OTHER_STUDENT).json()
         assert other["provisional"]["status"] == "invalid"
-        assert ask(client, "pie", OTHER_STUDENT).status_code == 422
+        declined = ask(client, "pie", OTHER_STUDENT)
+        assert (declined.status_code, declined.json()["status"]) == (200, "not_requestable")
         decision = {"lemma": "pie", "pos": "noun", "kind": "word"}
         late = client.post(f"/v1/admin/requests/{request['id']}/approve", json=decision,
                            headers=auth)  # fmt: skip
@@ -294,3 +297,43 @@ def test_the_owner_adds_retires_and_requeues_entries(migrated_database_url, anyi
                            headers=auth).status_code == 404  # fmt: skip
     actions = row("select array_agg(action order by id) from admin_audit")
     assert actions == (["entry.add", "entry.retire", "entry.requeue"],)
+
+
+def test_each_refusal_answers_200_and_writes_nothing(migrated_database_url, anyio_backend_options):
+    kettle_world(seeded=False)
+    pie_in_wiktionary()
+    with connect() as conn:  # the owner declined "pie" earlier
+        conn.execute("insert into word_requests (lemma, lemma_norm, origin, status)"
+                     " values ('pie', 'pie', 'student', 'rejected')")  # fmt: skip
+    cases = [
+        ("no language path", {"q": "kettle", "dir": "l1", "variety": "pt-BR"}, STUDENT,
+         "not_requestable"),
+        ("look it up first", {"q": "tetera", "dir": "l1"}, STUDENT, "not_requestable"),
+        ("declined", {"q": "pie"}, STUDENT, "not_requestable"),
+        ("no student", {"q": "kettle"}, {}, "no_student"),
+    ]  # fmt: skip
+    with api(anyio_backend_options) as client:
+        for name, body, headers, status in cases:
+            answer = client.post("/v1/requests", json=body, headers=headers)
+            assert answer.status_code == 200, (name, answer.text)
+            assert answer.json() == {"status": status, "headword": None, "entry_key": None}, name
+        # Today's limit: none left.
+        with connect() as conn:
+            conn.execute("insert into app_settings (name, value, updated_by)"
+                         " values ('word_requests_per_day', '0', 'lms')")  # fmt: skip
+        tunables.forget()
+        limited = client.post("/v1/requests", json={"q": "kettle"}, headers=STUDENT)
+        assert (limited.status_code, limited.json()["status"]) == (200, "quota_exceeded")
+    assert row("select count(*) from word_requests where lemma_norm <> 'pie'") == (0,)
+    assert row("select count(*) from word_request_votes") == (0,)
+
+
+def test_the_openapi_shows_both_answers(migrated_database_url):
+    spec = create_app().openapi()
+    responses = spec["paths"]["/v1/requests"]["post"]["responses"]
+    for code in ("200", "202"):
+        schema = responses[code]["content"]["application/json"]["schema"]
+        assert schema == {"$ref": "#/components/schemas/RequestOut"}
+    status = spec["components"]["schemas"]["RequestOut"]["properties"]["status"]
+    assert status["enum"] == ["requested", "exists", "quota_exceeded", "not_requestable",
+                              "no_student"]  # fmt: skip

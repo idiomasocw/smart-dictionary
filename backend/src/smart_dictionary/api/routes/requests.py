@@ -3,6 +3,10 @@
 Only after a lookup answered `requestable`: the server decides again, so a request can't add
 a typo, a word that exists already, or one the owner rejected. Each student has a daily
 number of requests (settings.word_requests_per_day, changeable in the console).
+
+A refusal is an answer, not an error: the student did nothing wrong, and the plugin's
+console stays clean. Only `requested` is 202; every other outcome is 200 with its `status`.
+A refusal writes nothing.
 """
 
 from typing import Annotated, Literal
@@ -21,6 +25,8 @@ from smart_dictionary.search.service import Direction, Query
 
 router = APIRouter(prefix="/v1", tags=["requests"])
 
+RequestStatus = Literal["requested", "exists", "quota_exceeded", "not_requestable", "no_student"]
+
 
 class RequestIn(BaseModel):
     q: str = Field(min_length=1, max_length=100, description="The search, as the student typed it")
@@ -29,12 +35,24 @@ class RequestIn(BaseModel):
 
 
 class RequestOut(BaseModel):
-    status: Literal["requested", "exists"]
+    status: RequestStatus = Field(
+        description=(
+            "requested (202): the request is recorded, for `headword`. "
+            "exists: the word is in the dictionary or on its way; open `entry_key`. "
+            "quota_exceeded: no requests left today. "
+            "not_requestable: a typo, a word the owner declined, or a search to look up "
+            "first. "
+            "no_student: nobody is signed in."
+        )
+    )
     headword: str | None = Field(default=None, description="requested: the word asked for")
     entry_key: str | None = Field(default=None, description="exists: open this entry")
 
 
-@router.post("/requests", status_code=202)
+REFUSED = {"description": "The word exists, or the request was refused: `status` says which"}
+
+
+@router.post("/requests", status_code=202, responses={200: {"model": RequestOut, **REFUSED}})
 async def request_word(
     body: RequestIn,
     response: Response,
@@ -42,22 +60,21 @@ async def request_word(
     principal: CurrentPrincipal,
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> RequestOut:
-    if not principal.subject:
-        raise ApiError(403, "forbidden", "Only a signed-in student can request a word")
     if any(ord(ch) < 32 for ch in body.q):
         raise ApiError(400, "invalid_query", "The query contains control characters")
+    response.status_code = 200  # every answer but `requested`
+    if not principal.subject:
+        return RequestOut(status="no_student")
     query = Query(raw=body.q.strip(), direction=body.dir,
                   variety=body.variety or settings.default_variety)  # fmt: skip
     language = await provisional.searched_in(conn, query)
     if language is None:
-        raise ApiError(422, "not_requestable", "This search can't become a request")
+        return RequestOut(status="not_requestable")
     found = await provisional.resolve(conn, query, language, principal.tenant)
     if found.outcome in ("shown", "writable", "factory"):
-        response.status_code = 200
         return RequestOut(status="exists", entry_key=found.key)
     if found.outcome != "requestable" or found.candidate is None:
-        detail = "Search for it first" if found.outcome == "translate" else None
-        raise ApiError(422, "not_requestable", "This search can't become a request", detail)
+        return RequestOut(status="not_requestable")  # including a Spanish search not looked up
     student = {"tenant": principal.tenant, "subject": principal.subject}
     user_id = (await conn.execute(provisional.STUDENT, student)).scalar_one()
     per_day = (await tunables.overrides_async(conn)).get(
@@ -68,9 +85,10 @@ async def request_word(
                                        query=q, per_day=per_day)  # fmt: skip
     if outcome == "quota_exceeded":
         await conn.rollback()
-        raise ApiError(429, "quota_exceeded", "No requests left today", "Try again tomorrow")
+        return RequestOut(status="quota_exceeded")
     if outcome == "invalid":
         await conn.rollback()
-        raise ApiError(422, "not_requestable", "This word was declined")
+        return RequestOut(status="not_requestable")
     await conn.commit()
+    response.status_code = 202
     return RequestOut(status="requested", headword=found.candidate.lemma)
