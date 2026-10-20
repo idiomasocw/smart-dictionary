@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     # The monthly cap on paid providers [OP-2]: an alert at 80%, and at 100% only the free
     # provider answers until the month rolls over.
     ai_monthly_budget_usd: float = Field(default=5.0, ge=0)
+    # Missed searches a student can send to AI in 24 hours (design §7.1); a Spanish search
+    # counts once. 30 since DeepSeek answers first (owner's choice, 2026-10-20).
+    ai_searches_per_day: int = Field(default=30, ge=0)
     # Audio (design §10.4). Cards link uploaded files under audio_base_url (the CDN, from
     # SSM). The audio job reads Kokoro from audio_model_dir, writes files to audio_outbox for
     # the host's uploader, and can be held to a few CPU threads.

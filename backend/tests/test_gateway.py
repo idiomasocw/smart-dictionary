@@ -19,6 +19,7 @@ from smart_dictionary.ai.providers import (
     api_schema,
     chain,
 )
+from smart_dictionary.core import tunables
 from smart_dictionary.core.settings import Settings, get_settings
 from smart_dictionary.db.sync import connect
 
@@ -234,6 +235,43 @@ def test_the_providers_answer_in_the_order_the_owner_set():
         settings = Settings.model_validate({"database_url": "postgresql+psycopg://x",
                                             "ai_provider_order": wrong})  # fmt: skip
         assert settings.ai_providers == used
+
+
+def test_the_owners_order_and_cap_from_the_admin_api_win(migrated_database_url):
+    def run() -> str | None:
+        """Which provider answers, with DeepSeek and Claude in the environment's order and
+        Groq's free tier keyed but left out of it."""
+        gateway = Gateway(
+            [Fake("deepseek", [{"word": "go"}]), Fake("anthropic", [{"word": "go"}])],
+            5.0,
+            spares=[Fake("groq", [{"word": "go"}], paid=False)],
+        )
+        with connect() as conn:
+            try:
+                return gateway.run(conn, TASK, "go").provider
+            except Unavailable:
+                return None
+
+    def override(name: str, value: str | None) -> None:
+        with connect() as conn:
+            conn.execute("delete from app_settings where name = %s", (name,))
+            if value is not None:
+                conn.execute(
+                    "insert into app_settings (name, value, updated_by) values (%s, %s, 'lms')",
+                    (name, value),
+                )
+        tunables.forget()
+
+    assert run() == "deepseek"
+    override("ai_provider_order", '["groq", "deepseek"]')
+    assert run() == "groq"  # the owner's order brings in a keyed provider the environment left out
+    override("ai_provider_order", "[]")
+    assert run() is None  # turned off
+    override("ai_provider_order", None)
+    override("ai_monthly_budget_usd", "0")
+    assert run() is None  # at the cap, and the free provider isn't in the order
+    override("ai_provider_order", '["anthropic", "groq"]')
+    assert run() == "groq"
 
 
 def test_gemini_answers_through_its_openai_endpoint():

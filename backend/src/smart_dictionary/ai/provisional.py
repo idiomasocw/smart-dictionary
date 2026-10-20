@@ -47,9 +47,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from smart_dictionary.ai.gateway import Answer, Gateway, Task, Unavailable
 from smart_dictionary.content.projections import english_forms
 from smart_dictionary.content.publish import publish
+from smart_dictionary.core import tunables
 from smart_dictionary.core.entrydoc import CEFR, KIND_POS, POS, EntryDoc, Kind
 from smart_dictionary.core.keys import entry_key, example_key, sense_key
 from smart_dictionary.core.principal import Principal
+from smart_dictionary.core.settings import get_settings
 from smart_dictionary.core.text import norm
 from smart_dictionary.db.sync import connect
 from smart_dictionary.factory.packs import MAX_HINTS, hint
@@ -59,9 +61,8 @@ from smart_dictionary.search.service import Query
 
 log = logging.getLogger(__name__)
 
-# Missed searches a student can send to AI in 24 hours (design §7.1). A Spanish search counts
-# once, though it may take a translation and a draft.
-QUOTA_PER_DAY = 10
+# The tasks a missed search may take; their calls count toward the student's daily searches
+# (settings.ai_searches_per_day): a Spanish search counts once, though it may take both.
 AI_TASKS = ["provisional_entry", "translate_query"]
 MIN_ZIPF = 1.0  # wordfreq knows the word at least this well
 MAX_WORDS = 4
@@ -251,7 +252,8 @@ async def on_miss(
     miss = (await conn.execute(MISS, params | TIMING)).first()
     if miss is not None and miss.status != "pending":
         return ProvisionalStatus(status=MISS_STATUS[miss.status], entry_key=miss.entry_key), None
-    if not gateway.configured:
+    overrides = await tunables.overrides_async(conn)
+    if not gateway.chain(overrides):
         return ProvisionalStatus(status="unavailable"), None
     generating = ProvisionalStatus(status="generating", retry_after_ms=RETRY_AFTER_MS)
     if miss is not None and miss.running:
@@ -263,7 +265,7 @@ async def on_miss(
         student = {"tenant": principal.tenant, "subject": principal.subject}
         user_id = (await conn.execute(STUDENT, student)).scalar_one()
         used = (await conn.execute(USED_TODAY, {"tasks": AI_TASKS, "user": user_id})).scalar_one()
-        if used >= QUOTA_PER_DAY:
+        if used >= overrides.get("ai_searches_per_day", get_settings().ai_searches_per_day):
             return ProvisionalStatus(status="quota_exceeded"), None
     await conn.execute(ADD_MISS, params)
     if (await conn.execute(CLAIM, params | TIMING)).first() is None:

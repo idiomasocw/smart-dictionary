@@ -39,11 +39,13 @@ def database_reachable() -> bool:
 
 
 def clear_caches() -> None:
+    from smart_dictionary.core import tunables
     from smart_dictionary.core.settings import get_settings
     from smart_dictionary.db import engine
 
     get_settings.cache_clear()
     engine.get_engine.cache_clear()
+    tunables.forget()
 
 
 @contextmanager

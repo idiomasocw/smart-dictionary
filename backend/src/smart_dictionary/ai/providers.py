@@ -241,22 +241,29 @@ class OpenAICompatible:
 
 def chain(settings: Settings) -> list[Provider]:
     """The providers with a key, in the order the gateway tries them (AI_PROVIDER_ORDER)."""
-    keyed: dict[str, Provider] = {}
+    available = keyed(settings)
+    return [available[name] for name in settings.ai_providers if name in available]
+
+
+def keyed(settings: Settings) -> dict[str, Provider]:
+    """Every provider with a key, by name, whether or not AI_PROVIDER_ORDER lists it: the
+    owner's order from the admin API may (core.tunables)."""
+    found: dict[str, Provider] = {}
     if settings.deepseek_api_key is not None:
         key = settings.deepseek_api_key.get_secret_value()
-        keyed["deepseek"] = OpenAICompatible("deepseek", DEEPSEEK_URL, key, "deepseek-chat", True)
+        found["deepseek"] = OpenAICompatible("deepseek", DEEPSEEK_URL, key, "deepseek-chat", True)
     if settings.anthropic_api_key is not None:
-        keyed["anthropic"] = Claude(key=settings.anthropic_api_key.get_secret_value())
+        found["anthropic"] = Claude(key=settings.anthropic_api_key.get_secret_value())
     if settings.gemini_api_key is not None:
         key = settings.gemini_api_key.get_secret_value()
         # Gemini 3 models always think; low effort keeps an entry fast and cheap, and the
         # factor leaves room in case the thinking counts toward max_tokens.
         gemini = OpenAICompatible("gemini", GEMINI_URL, key, GEMINI_MODEL, True, token_factor=3)
         gemini.extra["reasoning_effort"] = "low"
-        keyed["gemini"] = gemini
+        found["gemini"] = gemini
     if settings.groq_api_key is not None:
         key = settings.groq_api_key.get_secret_value()
-        keyed["groq"] = OpenAICompatible(
+        found["groq"] = OpenAICompatible(
             "groq", GROQ_URL, key, "openai/gpt-oss-120b", False, token_factor=3
         )
-    return [keyed[name] for name in settings.ai_providers if name in keyed]
+    return found

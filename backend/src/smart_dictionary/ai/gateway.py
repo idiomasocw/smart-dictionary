@@ -1,13 +1,14 @@
 """The AI gateway (design §7, ADR-009): the one way request-time AI reaches a model.
 
 - **Providers in order** (AI_PROVIDER_ORDER): DeepSeek, then Claude Haiku, Gemini and Groq by
-  default, each skipped without a key.
+  default, each skipped without a key. The owner's order from the admin API wins.
 - **Retries:** one more try after a 429 or 5xx. A timeout, a refusal or an answer that fails
   validation moves on to the next provider.
 - **A circuit breaker per provider:** 5 failures in a minute keep it out for 2 minutes.
 - **Validation:** every answer must match the task's Pydantic model before it's used.
 - **The budget [OP-2]:** every call is logged in llm_calls with its cost. At the monthly cap
-  the paid providers are skipped, and from 80% each call logs a warning for the owner.
+  the paid providers are skipped, and from 80% each call logs a warning for the owner. The
+  admin API can change the cap, within bounds (core.tunables).
 - **The cache:** a task's caller can keep an answer in ai_cache by its input.
 """
 
@@ -17,7 +18,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -26,7 +27,8 @@ import psycopg
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ValidationError
 
-from smart_dictionary.ai.providers import Provider, ProviderError, Reply, api_schema, chain
+from smart_dictionary.ai.providers import Provider, ProviderError, Reply, api_schema, keyed
+from smart_dictionary.core import tunables
 from smart_dictionary.core.settings import get_settings
 
 log = logging.getLogger(__name__)
@@ -100,15 +102,26 @@ class Breaker:
 
 class Gateway:
     def __init__(
-        self, providers: list[Provider], budget_usd: float, breaker: Breaker | None = None
+        self,
+        providers: list[Provider],
+        budget_usd: float,
+        breaker: Breaker | None = None,
+        spares: list[Provider] | None = None,
     ) -> None:
+        """`providers` in the environment's order; `spares` are the other providers with a
+        key, which only the owner's order can bring in."""
         self.providers = providers
         self.budget_usd = budget_usd
         self.breaker = breaker or Breaker()
+        self.keyed = {provider.name: provider for provider in [*(spares or []), *providers]}
 
-    @property
-    def configured(self) -> bool:
-        return bool(self.providers)
+    def chain(self, overrides: Mapping[str, Any]) -> list[Provider]:
+        """The providers to try, first tried first: the owner's order when one is set, else
+        the environment's. An empty chain means request-time AI is off."""
+        order = overrides.get("ai_provider_order")
+        if order is None:
+            return self.providers
+        return [self.keyed[name] for name in order if name in self.keyed]
 
     def run[T: BaseModel](
         self,
@@ -127,10 +140,12 @@ class Gateway:
             cached = self._cached(conn, task, cache_key)
             if cached is not None:
                 return cached
-        over_budget = self._spent(conn) >= self.budget_usd
+        overrides = tunables.overrides(conn)
+        budget = overrides.get("ai_monthly_budget_usd", self.budget_usd)
+        over_budget = self._spent(conn, budget) >= budget
         schema = api_schema(task.output)
         failed_before = False
-        for provider in self.providers:
+        for provider in self.chain(overrides):
             if (provider.paid and over_budget) or self.breaker.is_open(provider.name):
                 continue
             for attempt in range(2):
@@ -191,14 +206,14 @@ class Gateway:
         except ValidationError:
             return None  # written by an older version of the task's model
 
-    def _spent(self, conn: psycopg.Connection) -> float:
+    def _spent(self, conn: psycopg.Connection, budget: float) -> float:
         row = conn.execute(
             "select coalesce(sum(cost_usd), 0) from llm_calls"
             " where created_at >= date_trunc('month', now())"
         ).fetchone()
         spent = float(row[0]) if row else 0.0
-        if self.budget_usd and spent >= ALERT_SHARE * self.budget_usd:
-            log.warning("AI spend this month is $%.2f of the $%.2f cap", spent, self.budget_usd)
+        if budget and spent >= ALERT_SHARE * budget:
+            log.warning("AI spend this month is $%.2f of the $%.2f cap", spent, budget)
         return spent
 
     def _log(
@@ -242,7 +257,10 @@ def _hash(task: Task[Any], cache_key: str) -> bytes:
 def default_gateway() -> Gateway:
     """The process's gateway, so every request shares its circuit breakers."""
     settings = get_settings()
-    return Gateway(chain(settings), settings.ai_monthly_budget_usd)
+    available = keyed(settings)
+    ordered = [available[name] for name in settings.ai_providers if name in available]
+    spares = [available[name] for name in available if name not in settings.ai_providers]
+    return Gateway(ordered, settings.ai_monthly_budget_usd, spares=spares)
 
 
 def get_gateway() -> Gateway:

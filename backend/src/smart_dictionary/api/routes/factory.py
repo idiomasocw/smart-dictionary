@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from smart_dictionary.api.auth import FactoryClient
 from smart_dictionary.api.deps import SyncConnection
 from smart_dictionary.api.errors import ApiError
+from smart_dictionary.core import tunables
 from smart_dictionary.core.settings import Settings, get_settings
 from smart_dictionary.factory import lease, submit
 from smart_dictionary.factory.packs import Pack, build
@@ -144,7 +145,9 @@ def submit_entries(
             batch_id,
             items,
             produced_by=produced_by,
-            threshold=settings.factory_publish_threshold,
+            threshold=tunables.overrides(conn).get(
+                "factory_publish_threshold", settings.factory_publish_threshold
+            ),
         )
     except LookupError:
         raise ApiError(404, "not_found", "No such batch") from None

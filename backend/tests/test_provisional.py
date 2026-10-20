@@ -13,6 +13,7 @@ from factory_docs import world
 from smart_dictionary.ai.gateway import Gateway, get_gateway
 from smart_dictionary.ai.providers import ProviderError, Reply
 from smart_dictionary.api.app import create_app
+from smart_dictionary.core import tunables
 from smart_dictionary.db.sync import connect
 from smart_dictionary.factory import progress
 
@@ -196,7 +197,7 @@ def test_the_lookup_decides_without_ai(migrated_database_url, anyio_backend_opti
     assert model.calls == 0
 
 
-def test_each_student_sends_at_most_ten_searches_a_day(
+def test_each_student_sends_at_most_thirty_searches_a_day(
     migrated_database_url, anyio_backend_options
 ):
     kettle_world()
@@ -204,19 +205,43 @@ def test_each_student_sends_at_most_ten_searches_a_day(
         user = conn.execute(
             "insert into users (tenant_id, external_id) values ('ocw', 'person-1') returning id"
         ).fetchone()
-        # Searches count, not calls: these 12 calls are 10 searches, of both kinds.
-        for number in range(12):
+        # Searches count, not calls: these 32 calls are 30 searches, of both kinds.
+        for number in range(32):
             task = "translate_query" if number % 2 else "provisional_entry"
             conn.execute(
                 "insert into llm_calls (task, provider, model, prompt_version, outcome,"
                 " user_id, ref_key) values (%s, 'anthropic', 'm', 'v', 'ok', %s, %s)",
-                (task, user[0] if user else None, f"word{min(number, 9)}"),
+                (task, user[0] if user else None, f"word{min(number, 29)}"),
             )
     model = Model(KETTLE, TETERA)
     with client(anyio_backend_options, Gateway([model], 5.0)) as api:
         assert lookup(api, "kettles")["provisional"]["status"] == "quota_exceeded"
         assert lookup(api, "tetera")["provisional"]["status"] == "quota_exceeded"
+        assert model.calls == 0
+        # The owner raises the cap from the admin console: the student goes on at once.
+        with connect() as conn:
+            conn.execute(
+                "insert into app_settings (name, value, updated_by)"
+                " values ('ai_searches_per_day', '31', 'lms')"
+            )
+        tunables.forget()
+        assert lookup(api, "kettles")["provisional"]["status"] == "generating"
+    assert model.calls == 1
+
+
+def test_the_owner_can_turn_request_time_ai_off(migrated_database_url, anyio_backend_options):
+    kettle_world()
+    with connect() as conn:
+        conn.execute(
+            "insert into app_settings (name, value, updated_by)"
+            " values ('ai_provider_order', '[]', 'lms')"
+        )
+    model = Model(KETTLE)
+    with client(anyio_backend_options, Gateway([model], 5.0)) as api:
+        assert lookup(api, "kettles")["provisional"]["status"] == "unavailable"
     assert model.calls == 0
+    # Recorded as missed, but nothing was tried, so nothing failed.
+    assert miss("kettles") == ("pending", 0, False, None, None)
 
 
 def test_a_word_the_model_rejects_is_settled(migrated_database_url, anyio_backend_options):
