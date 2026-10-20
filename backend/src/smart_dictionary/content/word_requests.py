@@ -3,8 +3,8 @@
 AI writes entries only for words the owner chose (ai.provisional). Any other word a student
 searches for gets no entry; when it's a real headword, the student may request it:
 - **Requestable:** Wiktionary has it as a headword (our import leaves misspellings out, so
-  *recieve* never is), and the owner hasn't rejected it, in the console or while curating the
-  seeds. Typos and nonsense just get "not found".
+  *recieve* never is), none of its words is blocked, and the owner hasn't rejected it, in the
+  console or while curating the seeds. Typos and nonsense just get "not found".
 - **One request per headword** gathers every student who asked: `word_request_votes` holds a
   user ID and the search they made, never a name. Each student has a daily number of requests.
 - **The owner decides** in the console. Approving queues the word, approved and first in the
@@ -28,6 +28,7 @@ from smart_dictionary.core.keys import entry_key
 from smart_dictionary.core.principal import Principal
 from smart_dictionary.core.text import norm
 from smart_dictionary.factory.queue import ASKED_PRIORITY
+from smart_dictionary.factory.validate import BLOCKED
 
 # Suggestions put the commonest parts of speech first.
 POS_ORDER = ["noun", "verb", "adjective", "adverb", "phrase"]
@@ -38,6 +39,9 @@ from ref_wiktionary k
 where k.word_norm = any({lemmas})
   and not exists (select from word_requests r
                   where r.lemma_norm = k.word_norm and r.status = 'rejected')
+  and not exists (select from entries e
+                  where e.language = 'en' and e.lemma_norm = k.word_norm
+                    and e.status = 'retired')
   and not (exists (select from seed_candidates c
                    where c.lemma_norm = k.word_norm and c.decision in ('reject', 'merge'))
            and not exists (select from seed_candidates c
@@ -202,16 +206,7 @@ def approve(
     if existing is not None and existing[0] == "retired":
         raise Conflict(f"{key} was retired, and keys are never reused")
     if existing is None:
-        zipf = conn.execute(
-            "select max(zipf) from ref_freq where language = 'en' and word = %s", (norm(lemma),)
-        ).fetchone()
-        conn.execute(
-            "insert into entries (id, key, language, lemma, lemma_norm, pos, kind, homograph,"
-            " freq_zipf, priority, status, sources, approved_at, approved_by)"
-            " values (%s, %s, 'en', %s, %s, %s, %s, 1, %s, %s, 'queued', %s, now(), %s)",
-            (new_id(), key, lemma, norm(lemma), pos, kind, zipf[0] if zipf else None,
-             ASKED_PRIORITY, ["request"], decided_by),
-        )  # fmt: skip
+        queue_approved(conn, key, lemma, pos, kind, approved_by=decided_by, sources=["request"])
     else:
         conn.execute(
             "update entries set approved_at = coalesce(approved_at, now()),"
@@ -241,6 +236,37 @@ def approve(
             (tenant, norm(lemma)),
         )
     return Approved(key, write_now)
+
+
+def queue_approved(
+    conn: psycopg.Connection,
+    key: str,
+    lemma: str,
+    pos: str,
+    kind: str,
+    *,
+    approved_by: str,
+    sources: list[str],
+) -> None:
+    """A new entry the owner chose, queued first in the factory's queue. Conflict: the same
+    expression exists as another multiword kind (an idiom beside a phrase)."""
+    twin = conn.execute(
+        "select key from entries where language = 'en' and lemma_norm = %s and pos = %s"
+        " and kind::text <> %s and kind <> 'word' and %s <> 'word' and status <> 'retired'",
+        (norm(lemma), pos, kind, kind),
+    ).fetchone()
+    if twin is not None:
+        raise Conflict(f"{twin[0]} is the same expression")
+    zipf = conn.execute(
+        "select max(zipf) from ref_freq where language = 'en' and word = %s", (norm(lemma),)
+    ).fetchone()
+    conn.execute(
+        "insert into entries (id, key, language, lemma, lemma_norm, pos, kind, homograph,"
+        " freq_zipf, priority, status, sources, approved_at, approved_by)"
+        " values (%s, %s, 'en', %s, %s, %s, %s, 1, %s, %s, 'queued', %s, now(), %s)",
+        (new_id(), key, lemma, norm(lemma), pos, kind, zipf[0] if zipf else None,
+         ASKED_PRIORITY, sources, approved_by),
+    )  # fmt: skip
 
 
 def reject(
@@ -366,6 +392,8 @@ def _reopen(conn: psycopg.Connection, request: dict[str, Any], key: str, shown: 
 
 def _candidate(lemmas: list[str], rows: Any) -> Candidate | None:
     for lemma in lemmas:
+        if BLOCKED.intersection(lemma.split()):
+            continue
         found = [row for row in rows if row[1] == lemma]
         if found:
             options = _options([f"{row[2]}/{row[3]}" for row in found])

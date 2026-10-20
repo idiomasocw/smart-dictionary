@@ -127,7 +127,8 @@ Every sense needs it. Write **neutral Latin American Spanish**:
 - **Settings are everyday adult life:** work, study, travel, family, health, home, food, shopping, technology, sport, free time.
 - **Use names and places from the US, Latin America, Brazil and the Arab world**, alongside others: Camila, Diego, Juan, John, Robert, Daniel, Karen, Sarah, Jessica, Elizabeth, Mariana, Luis, João, Fernanda, Fatima, Omar, Layla; Bogotá, Lima, Monterrey, São Paulo, Amman. Never use real people, brands or celebrities.
 - **Safe for 16 and up:**
-  - nothing sexual, violent, cruel or hateful;
+  - nothing sexual, graphic, cruel or hateful, and no violence shown as good;
+  - **a headword on a hard topic** (_kill_, _bomb_, _drunk_, _terrorism_) is in the dictionary because learners meet it in the news, in history and in idioms. Write it in calm, factual, non-graphic sentences: a news report, a history class, a TV series, an idiom (_kill time_, _my feet are killing me_). Never describe injuries or show harm as exciting. The headword's own forms pass the server's safety check (V10); other blocked words still fail it;
   - no drugs, no partisan politics, no religious controversy (neutral sentences about how institutions work are fine: _The bill passed the House last week._);
   - no stereotypes, and no medical, legal or financial advice.
 - **Use US English** (_vacation_, _apartment_, _cell phone_), unless the sense is used only in the UK.

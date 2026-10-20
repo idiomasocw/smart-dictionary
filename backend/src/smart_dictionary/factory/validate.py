@@ -56,7 +56,8 @@ IPA_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzæɑɐɒəɚɛɜɝɪɨʊʉɔʌøœɤɯβçðɖɟɡɣɦʝɫɬɭʎɱŋɲɳɹɾɽʀʁʂʃʈθʋʍχʐʒʔʕːˑˈˌʰʲʷ̥̩̯̃͡ "
 )
 # Examples are for an audience of 16 and up (EC-7). A short floor: the reviewer and the
-# server's spot checks look for the rest.
+# server's spot checks look for the rest. A headword on the list (kill) is the owner's
+# choice, so its own forms are exempt in its entry (V10); students can't request one.
 BLOCKED = frozenset(
     {
         "sex", "sexy", "sexual", "porn", "porno", "pornography", "naked", "nude", "orgasm",
@@ -513,6 +514,9 @@ def _english_texts(doc: EntryDoc) -> Iterator[tuple[str, str]]:
 
 
 def _safety(doc: EntryDoc) -> Iterator[Issue]:
+    # The headword itself is the owner's choice (kill, drunk, bomb): its own examples must
+    # hold it, so its forms are exempt. Any other blocked word still fails.
+    own = {token for form in english_forms(doc) for token in form.split()}
     for sense in doc.senses:
         if sense.retired:
             continue
@@ -520,7 +524,8 @@ def _safety(doc: EntryDoc) -> Iterator[Issue]:
         if offensive and "offensive" not in sense.registers:
             yield Issue("V10", "error", sense.key, "an offensive sense needs the offensive label")
         for example in sense.examples:
-            blocked = ", ".join(sorted(BLOCKED & set(_english_tokens(example.text))))
+            found = (BLOCKED & set(_english_tokens(example.text))) - own
+            blocked = ", ".join(sorted(found))
             if blocked:
                 yield Issue("V10", "error", example.key, f"unsuitable for 16+: {blocked}")
 

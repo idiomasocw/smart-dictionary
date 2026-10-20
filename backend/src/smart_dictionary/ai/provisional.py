@@ -2,8 +2,8 @@
 chose; a real word nobody chose can be requested, for the owner to decide.
 
 A lookup that finds nothing still answers at once, decided with SQL only (NF-1):
-- **invalid:** over MAX_WORDS words, a blocked word, a word the reference data doesn't know,
-  or one that isn't a real headword nobody chose (typos and nonsense end here);
+- **invalid:** over MAX_WORDS words, a word the reference data doesn't know, or one nobody
+  chose that can't be requested (typos, nonsense and blocked words end here);
 - **ready:** the word is shown already, under the form `entry_key`;
 - **generating:** an approved word nobody has written yet. One AI job runs after the response
   and publishes a Beta entry; asking again a moment later finds it. The routine leases Beta
@@ -64,6 +64,7 @@ from smart_dictionary.factory.validate import (
     BLOCKED,
     Context,
     Entry,
+    Issue,
     _clitic_stems,
     score,
     validate,
@@ -141,8 +142,8 @@ class Translation(BaseModel):
 PROMPTS = Path(__file__).parent / "prompts"
 PROVISIONAL = Task(
     name="provisional_entry",
-    prompt_version="provisional_entry.v2",
-    system=(PROMPTS / "provisional_entry.v2.md").read_text(encoding="utf-8"),
+    prompt_version="provisional_entry.v3",
+    system=(PROMPTS / "provisional_entry.v3.md").read_text(encoding="utf-8"),
     output=Draft,
     max_tokens=900,
 )
@@ -277,18 +278,22 @@ async def resolve(
     """What a missed search stands for, in the language searched_in() routed it to."""
     q = query.norm_l1 if language == "es" else query.norm_en
     words = q.split()
-    if not words or len(words) > MAX_WORDS or BLOCKED.intersection(words):
+    if not words or len(words) > MAX_WORDS:
         return INVALID
     params = {"words": words, "zipf": MIN_ZIPF, "language": language}
     if not {row[0] for row in await conn.execute(KNOWN, params)}.issuperset(words):
         return INVALID
     if language == "en":
         lemmas = word_requests.headwords(q)
+        # A word the owner chose is written even when it's blocked (kill, drunk): the blocklist
+        # keeps such words out of requests and examples, not out of the dictionary.
         found = _choose(await _targets(conn, lemmas, None))
         if found is not None:
             return found
         candidate = await word_requests.requestable(conn, lemmas)
         return Resolution("requestable", candidate=candidate) if candidate else INVALID
+    if BLOCKED.intersection(words):
+        return INVALID  # before spending a translation on it
 
     # Spanish: what the translation found last time, checked again, since the entry or the
     # owner's decision may have changed.
@@ -556,10 +561,16 @@ def _check_and_publish(
         raise NoEntry("the model turned the headword down as unsuitable", target.key, final=True)
     if spanish:
         _with_equivalent(draft, spanish, job.query)
-    raw = _document(conn, target, draft)
-    entry = Entry(key=target.key, lemma=target.lemma, pos=target.pos, kind=target.kind)
-    issues = validate(entry, raw, Context.load(conn, [entry], [raw]), provisional=True)
+    raw, issues = _checked(conn, target, draft)
     errors = [issue for issue in issues if issue.severity == "error"]
+    dropped: list[str] = []
+    passing = _passing_senses(draft, errors, target.key)
+    if passing is not None:
+        # Only some senses failed: a short entry with the others beats no entry at all.
+        dropped = [f"{i.check} {i.where}: {i.message}" for i in errors]
+        draft = Draft(verdict=draft.verdict, senses=passing)
+        raw, issues = _checked(conn, target, draft)
+        errors = [issue for issue in issues if issue.severity == "error"]
     if errors:
         found = "; ".join(f"{i.check} {i.where}: {i.message}" for i in errors)
         raise NoEntry(f"the draft failed its checks: {found}"[:300], target.key)
@@ -585,11 +596,42 @@ def _check_and_publish(
         "query": job.query,
         "searched_in": job.language,
     }
-    publish(conn, doc, produced_by=produced_by, qa={"issues": [asdict(i) for i in issues]},
-            quality=score(issues, None), status="provisional")  # fmt: skip
+    qa = {"issues": [asdict(i) for i in issues], "dropped_senses": dropped}
+    publish(conn, doc, produced_by=produced_by, qa=qa, quality=score(issues, None),
+            status="provisional")  # fmt: skip
     _settle(conn, job, "provisional", doc.key)
     gateway.remember(conn, PROVISIONAL, cache_key, answer)
     conn.commit()
+
+
+def _checked(
+    conn: psycopg.Connection, target: Target, draft: Draft
+) -> tuple[dict[str, Any], list[Issue]]:
+    raw = _document(conn, target, draft)
+    entry = Entry(key=target.key, lemma=target.lemma, pos=target.pos, kind=target.kind)
+    return raw, validate(entry, raw, Context.load(conn, [entry], [raw]), provisional=True)
+
+
+def _passing_senses(draft: Draft, errors: list[Issue], key: str) -> list[DraftSense] | None:
+    """The draft's senses with no error, when every error lies inside a sense and at least one
+    sense is clean; None otherwise (no errors, or one about the entry as a whole)."""
+    failing: set[int] = set()
+    for issue in errors:
+        number = _sense_number(issue.where, key)
+        if number is None:
+            return None
+        failing.add(number)
+    passing = [sense for number, sense in enumerate(draft.senses, start=1)
+               if number not in failing]  # fmt: skip
+    return passing if failing and passing else None
+
+
+def _sense_number(where: str, key: str) -> int | None:
+    """2 for en:x:n#2 or en:x:n#2.ex1; None for anything else."""
+    if not where.startswith(f"{key}#"):
+        return None
+    number = where.removeprefix(f"{key}#").split(".")[0]
+    return int(number) if number.isdigit() else None
 
 
 def _with_equivalent(draft: Draft, spanish: str, query: str) -> None:

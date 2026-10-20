@@ -1,5 +1,6 @@
 """The factory's checks (design §6.4), one change at a time to a correct entry."""
 
+import json
 from dataclasses import replace
 from typing import Any
 
@@ -203,6 +204,20 @@ def test_v10_safety():
     doc = go_doc()
     sense(doc)["definition"] = "an offensive way to move or travel from one place"
     assert found(doc)["V10"] == {"error"}
+
+
+def test_v10_lets_a_blocked_headword_appear_in_its_own_examples():
+    # "kill" is a seeded A1 verb: its examples must hold it, so its forms pass, while any
+    # other blocked word still fails.
+    doc = json.loads(json.dumps(go_doc()).replace("en:go:v", "en:kill:v"))
+    doc["lemma"] = "kill"
+    kill = Entry(key="en:kill:v", lemma="kill", pos="verb", kind="word")
+    sense(doc)["examples"][0]["text"] = "Diego killed an hour at the airport with a book."
+    sense(doc)["examples"][1]["text"] = "Standing in line all morning is killing me."
+    assert "V10" not in found(doc, kill)
+    sense(doc)["examples"][1]["text"] = "The old film about a bomb is killing me."
+    issues = validate(kill, doc, CONTEXT)
+    assert [i.message for i in issues if i.check == "V10"] == ["unsuitable for 16+: bomb"]
 
 
 def test_v11_counts_and_the_style_guide_lengths():

@@ -198,7 +198,7 @@ def test_a_missing_seeded_word_becomes_a_beta_entry(migrated_database_url, anyio
     call = row("select l.outcome, u.external_id from llm_calls l join users u on u.id = l.user_id")
     assert call == ("ok", "person-1")
     produced = row("select produced_by from entry_revisions")[0]
-    assert produced["source"] == "provisional" and produced["prompt"] == "provisional_entry.v2"
+    assert produced["source"] == "provisional" and produced["prompt"] == "provisional_entry.v3"
 
 
 def test_ai_never_writes_a_word_nobody_chose(migrated_database_url, anyio_backend_options):
@@ -575,3 +575,63 @@ def test_one_job_per_query_at_a_time(migrated_database_url, anyio_backend_option
     with client(anyio_backend_options, Gateway([model], 5.0)) as api:
         assert lookup(api, "tetera")["provisional"]["status"] == "generating"
     assert model.asked == ["translate_query", "provisional_entry"]
+
+
+KILL: dict[str, Any] = {
+    "verdict": "entry",
+    "senses": [
+        {
+            "cefr": "A1",
+            "definition": "to make a person, animal or plant stop living",
+            "short_gloss": "make something die",
+            "gloss_es": "hacer que una persona, un animal o una planta deje de vivir",
+            "equivalents": [{"term": "matar", "match": "exact"}],
+            "example": "The cold night killed the young plants in the garden.",
+            "example_es": "La noche fría mató las plantas jóvenes del jardín.",
+        }
+    ],
+}
+
+
+def test_a_chosen_word_on_the_blocklist_still_gets_its_entry(
+    migrated_database_url, anyio_backend_options
+):
+    kettle_world()
+    with connect() as conn:
+        conn.execute(
+            "insert into ref_freq (dataset_id, language, word, zipf)"
+            " values ('t-freq', 'en', 'kill', 5.1), ('t-freq', 'en', 'bomb', 4.4)"
+        )
+        seed(conn, "en:kill:v", "kill", "verb")  # the owner seeded it: an A1 verb
+        conn.execute(
+            "insert into ref_wiktionary (dataset_id, word, word_norm, pos, pos_raw, kind, glosses)"
+            " values ('t-wiki', 'bomb', 'bomb', 'noun', 'noun', 'word', '{An explosive.}')"
+        )
+    model = Model(KILL)
+    with client(anyio_backend_options, Gateway([model], 5.0)) as api:
+        assert lookup(api, "kill")["provisional"]["status"] == "generating"
+        [item] = lookup(api, "killed")["groups"][0]["items"]
+        assert item["entry_key"] == "en:kill:v"
+        # Nobody chose "bomb": a blocked word can't be requested.
+        assert lookup(api, "bomb")["provisional"]["status"] == "invalid"
+    assert model.calls == 1
+
+
+def test_a_draft_with_one_bad_sense_publishes_the_good_one(
+    migrated_database_url, anyio_backend_options
+):
+    kettle_world()
+    draft = copy.deepcopy(KETTLE)
+    second = copy.deepcopy(KETTLE["senses"][0])
+    second["short_gloss"] = "a pot that you use to boil water"  # 8 words: over the 5 allowed
+    draft["senses"].append(second)
+    model = Model(draft)
+    with client(anyio_backend_options, Gateway([model], 5.0)) as api:
+        assert lookup(api, "kettles")["provisional"]["status"] == "generating"
+        [item] = lookup(api, "kettles")["groups"][0]["items"]
+        assert item["entry_key"] == "en:kettle:n"
+    assert model.calls == 1
+    assert row("select jsonb_array_length(doc->'senses') from entries"
+               " where key = 'en:kettle:n'") == (1,)  # fmt: skip
+    qa = row("select qa from entry_revisions")[0]
+    assert qa["dropped_senses"] == ["length en:kettle:n#2: short gloss over 5 words"]
