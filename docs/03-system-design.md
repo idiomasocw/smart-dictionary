@@ -122,10 +122,15 @@ candidate ──(seed accepted)──▶ queued ──(batch leased)──▶ ge
 validating ──(passes)───────────────────────────────▶ published
 validating ──(fails, attempts < 2)───────────────────▶ needs_repair ──(next batch)──▶ generating
 validating ──(fails, attempts = 2)───────────────────▶ quarantined
-missing word ──(gateway)──▶ provisional ──(leased with top priority)──▶ generating …
+missing word, seeded ──(gateway)──▶ provisional ──(leased with top priority)──▶ generating …
+missing word, not seeded ──(student requests it)──▶ word request ──(owner approves)──▶ queued …
 published ──(hide, flag or valid report / failed re-check or audit)──▶ needs_repair   (the live entry stays; hidden parts are filtered)
 any ──(owner)──▶ retired
 ```
+
+**What students see** (`content/visibility.py`, revision 0012): an entry that's **approved, has a published document and isn't retired**. The pipeline status doesn't decide it:
+- **An entry being rewritten or repaired** (`generating`, `needs_repair`, `quarantined`) keeps showing the document it last published. A Beta entry never vanishes while the routine replaces it, and a search that points to it never opens a 404.
+- **Approved** (`entries.approved_at`, `approved_by`) means the owner chose the word: seeded through `seeds queue`, loaded as a fixture, or approved in the console (§6.7). The routine leases only approved entries.
 
 **Leases fix the old "stuck in PROCESSING" bug (H3).**
 - A leased batch sets `lease_batch_id`, `lease_expires_at` (3 h) and `leased_from`, the status the entry had before (revision 0007).
@@ -564,6 +569,7 @@ Caddy accepts `bbb` traffic only from the BBB server's IP. Factory routes are to
 | DELETE | `/v1/flags/{id}` | bbb: its author, or staff | Undo a hide or flag | TF-3 |
 | POST | `/v1/reports` `{target_key, reason, comment?}` | bbb (any active user) | Report a problem; answers 202 | CG-5 |
 | GET | `/v1/me/reports` | bbb | My reports and what happened to each | CG-9 |
+| POST | `/v1/requests` `{q, dir?, variety?}` | bbb (a signed-in student) | Request a word the lookup called `requestable`; answers 202, or 200 when it exists | §6.7 |
 | POST | `/v1/events` `[{type, target_key}]` | bbb | Behavior signals only the plugin sees (sense reselected, card closed quickly); batched and rate-limited | CG-10 |
 | GET · POST | `/v1/teacher/micro-review` (v1.x) | bbb (verified teacher) | Five entries to review; thumbs up or down per sense | TF-5 |
 | GET | `/v1/admin/quality` | admin | Open reports and flags, the suspicion queue, time to fix | CG-8, OP-1 |
@@ -575,6 +581,7 @@ Caddy accepts `bbb` traffic only from the BBB server's IP. Factory routes are to
 | GET | `/v1/admin/stats` | admin | Entries by status, missed searches, AI use and spend, audio, recent runs (§5.5) | OP-1 |
 | GET | `/v1/admin/entries?letter=&status=&q=&sort=&page=&per_page=` · `/v1/admin/entries/letters` · `/v1/admin/entries/{key}` | admin | Browse entries, with why a repair was needed (§5.5) | OP-1 |
 | GET | `/v1/admin/misses?status=&stuck=&q=&page=&per_page=` | admin | Missed searches and their AI attempts (§5.5) | LK-10, OP-1 |
+| GET | `/v1/admin/requests?status=&origin=&q=&page=&per_page=` · POST `/v1/admin/requests/{id}/approve` `{lemma, pos, kind, note?}` · POST `/v1/admin/requests/{id}/reject` `{note?}` | admin | The word-request queue, with its evidence; the owner's decisions, audited (§6.7) | OP-1 |
 | GET · PUT · DELETE | `/v1/admin/settings[/{name}]` · GET `/v1/admin/audit` | admin | The owner's settings, audited (§5.5) | OP-1, OP-2 |
 | GET | `/healthz` · `/readyz` | none | Health checks | — |
 
@@ -603,16 +610,18 @@ Caddy accepts `bbb` traffic only from the BBB server's IP. Factory routes are to
 - `matched.via` is `exact`, `form` or `equivalent`. `equivalent` is the sense's first equivalent in the student's variety.
 - `did_you_mean` (trigram and phonetic matches) is filled only when no group matched.
 - Inflected input such as *me di cuenta* needs `l1_forms` (§10.2), which publishing doesn't generate yet; until it does, such queries reach these senses through `did_you_mean`.
-- `provisional` is null unless nothing matched. Then it says what happens about the missing word (§6.5) [LK-10], for example `{"status": "generating", "entry_key": null, "retry_after_ms": 1500}`. A search in Spanish gets the same object: the dictionary finds the English word it means.
+- `provisional` is null unless nothing matched. Then it says what happens about the missing word (§6.5) [LK-10], for example `{"status": "generating", "entry_key": null, "retry_after_ms": 1500, "headword": null}`. A search in Spanish gets the same object: the dictionary finds the English word it means.
 
 | `status` | Meaning | What the plugin does |
 |---|---|---|
-| `generating` | AI is writing a provisional entry, or finding the English word for a Spanish search | Shows that it's working, and asks the same lookup again after `retry_after_ms`, for up to about 10 s. The entry then arrives as an ordinary item with `"provisional": true`, shown as *Beta*; for a Spanish search, on the `l1` side |
+| `generating` | AI is writing a provisional entry for a word the owner chose, or finding the English word for a Spanish search | Shows that it's working, and asks the same lookup again after `retry_after_ms`, for up to about 10 s. The entry then arrives as an ordinary item with `"provisional": true`, shown as *Beta*; for a Spanish search, on the `l1` side |
 | `ready` | An entry exists under `entry_key`, though the query doesn't reach it: for example a Spanish search whose English word was already in the dictionary | Opens `entry_key` |
 | `queued` | The routine is writing this word, under `entry_key`; or AI failed it three times and it's next in the factory's queue | Says the word is coming soon |
-| `invalid` | Nothing to generate: a word the search's language doesn't know, a misspelling, a name, blocked, or over 4 words | "Not found", with `did_you_mean` |
+| `requestable` | A real headword nobody chose, `headword` (§6.7): no AI writes it | "Not in the dictionary yet", with a button to request `headword` (`POST /v1/requests`) |
+| `requested` | This student requested `headword` already | "You asked for this word; it's waiting for review" |
+| `invalid` | Nothing to generate or request: a word the search's language doesn't know, a misspelling, a word no dictionary has, one the owner rejected, blocked, or over 4 words | "Not found", with `did_you_mean` |
 | `quota_exceeded` | The student sent 30 missed searches to AI in the last 24 hours (the owner can change the cap, §5.5) | Asks them to try again tomorrow |
-| `unavailable` | AI isn't configured, or its last attempt at this word failed (it tries again 10 minutes later, 3 times at most) | "Not found yet" |
+| `unavailable` | AI is off, or its last attempt at this word failed (it tries again 10 minutes later, 3 times at most) | "Not found yet" |
 
 ### 5.4 Conventions
 
@@ -639,15 +648,18 @@ The audit's admin dashboard (§12 there) arrives as a console inside the LMS, wh
 - `GET /v1/admin/misses`: missed searches and their AI attempts; `stuck=true` lists those AI gave up on that no seed covers.
 - `GET /v1/admin/audit`: every setting change.
 
-It never names a student: AI use is counted per search, and the console sees how many students reached the daily cap, never which.
+- `GET /v1/admin/requests`, with `POST …/approve` and `…/reject`: the word-request queue (§6.7).
 
-**What it changes:** only the settings in `core/tunables.py`, each with tighter bounds than the environment allows. A leaked token can turn AI off or move the cap, but can't run up a bill or read a key.
+It never names a student: AI use is counted per search, and the console sees how many students reached the daily cap, never which. A request shows how many students asked and what they searched, never who.
+
+**What it changes:** the decision on a word request (§6.7), and the settings in `core/tunables.py`, each with tighter bounds than the environment allows. A leaked token can turn AI off or move the cap, but can't run up a bill or read a key.
 
 | Setting | Default (environment) | Bounds |
 |---|---|---|
 | `ai_provider_order` | `AI_PROVIDER_ORDER` | Known providers, once each; empty turns request-time AI off |
 | `ai_searches_per_day` | `AI_SEARCHES_PER_DAY`, 30 | 0–200 |
 | `ai_monthly_budget_usd` | `AI_MONTHLY_BUDGET_USD`, 5 | 0–50 |
+| `word_requests_per_day` | `WORD_REQUESTS_PER_DAY`, 10 | 0–50 |
 | `factory_publish_threshold` | `FACTORY_PUBLISH_THRESHOLD`, 0.7 | 0.5–1 |
 
 - **Where they live:** an override is a row in `app_settings` and wins over the environment; `DELETE` removes it, and the environment's value applies again. Each API process rereads them every 15 seconds, so a change needs no deploy.
@@ -827,35 +839,38 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
 
 ### 6.5 Missing words and provisional entries [LK-10, CG-4]
 
-1. **Gate:**
-   - no hit in G1–G4;
-   - the query is plausible English: in the wordfreq vocabulary (Zipf ≥ 1.0) or in the Wiktionary lemma/form list, or a multiword string whose tokens are all known;
-   - not on the blocklist;
-   - within the student's quota: 30 missed searches sent to AI in 24 hours by default (`AI_SEARCHES_PER_DAY`, or the owner's console, §5.5).
-2. **Dedupe:** an advisory lock on `hash(q_norm)` plus the `misses` row, so concurrent students trigger only one generation.
-3. **Generate:** the gateway task `provisional_entry` (DeepSeek → Haiku → Gemini → Groq) returns 1–2 senses, one example each and the es-419 layer, as structured output.
-4. **Validate** with V1–V5, V10 and V11, then **publish** with status `provisional` and top priority. The next routine run leases it, and the final entry replaces it under the same key.
+**AI writes a Beta entry only for a word the owner chose** (the owner's rule, 2026-10-20). A word is chosen when it's seeded (the curated lists, through `seeds queue`) or approved in the console (§6.7). Every other word a student searches for gets no AI entry: a real headword becomes requestable, and the rest is "not found". A student's search can never add a word to the dictionary on its own.
 
-**Built (`backend/src/smart_dictionary/ai/provisional.py`):**
-- **The lookup decides with SQL only** and answers at once. The generation runs after the response, in a worker thread (a FastAPI background task), and the response's `provisional` object (§5.3) tells the plugin to ask again in 1.5 s.
-- **The gate also skips** queries over 4 words. The quota counts each student's searches that reached AI over the last 24 hours (distinct `ref_key`s of successful calls), so a Spanish search that takes two calls counts once. Students are rows in `users`, keyed by the LMS person ID from the proxy.
-- **The model drafts only the meaning:** lemma, part of speech, kind, and 1–2 senses with one example each. The server builds the document around it: the keys, pronunciations from CMUdict and Britfone, a multiword entry's pattern, and `provisional: true`.
-- **Checks:** all of V1–V11, with V11's counts for a short entry (1–2 senses, at least one example). Errors block; warnings lower `quality`. The query must be one of the draft's forms (*kettles* → *kettle*), so a model that drifts to another word publishes nothing.
-- **The model can turn a query down:** not English, a misspelling, a proper noun or a slur. The miss is then settled as `invalid`, and later lookups answer at once without a call.
-- **It never replaces the routine's work.** A word being written or already published keeps its document, and the miss points to it (`queued`, `ready`). A `queued` word nobody has written yet is taken over, keeping its queue priority. Provisional entries are leased first whatever their priority (`QUEUE_ORDER`).
-- **One job at a time:** the lookup that starts a job claims the miss (`misses.running_since`), so other lookups answer `generating` without starting another, however often the plugin asks. A claim older than 3 minutes expires, so a crashed job can't hold a word.
-- **A failed generation** counts an attempt on the miss (`attempts`, `last_attempt_at`, `last_error`; revision 0010):
-  - **What counts:** no provider answered; a draft that can't make an entry, fails its checks, is about another word, or turns the word down; or any error.
-  - **For 10 minutes after each failure,** lookups answer `unavailable` at once, with no AI call. After that, one lookup starts one new attempt.
-  - **After 3 failed attempts,** the word goes to the factory. Its entry, queued from its seed candidates if it has none yet, moves to the front of the queue, and lookups answer `queued` with its key.
-  - **A word no seed candidate covers** stays `unavailable`, and `smart-dictionary factory status` lists it for the owner.
-  - Cool-down, attempts and hand-off are the owner's choices (2026-10-20).
-- **Searches in Spanish** take their own path [LK-5, LK-6], so they work before the routine has written their words:
-  - **Routing:** a miss is Spanish when it was searched in Spanish (`dir=l1`), or with `dir=auto` when every word is known in Spanish and at least as common there as in English (`ref_freq`). Everything else takes the English path, so a Spanish word no longer spends a `provisional_entry` call that answers "not English". Other student languages have no path yet.
-  - **The gate is the English one,** in Spanish: every word known in Spanish (`ref_freq` or `ref_forms`), none blocked, the same quota and lock. The miss is a `misses` row with language `es`.
-  - **`translate_query`** names the 1–3 English headwords the student most likely means (lemma, part of speech, kind), best first, or `none` for junk, which settles the miss as `invalid`.
-  - **The best headword is resolved:** a live entry settles the miss as `ready` with its key, and an entry the routine is writing as `queued`. Otherwise `provisional_entry` drafts it, told what the student typed, and the Spanish is added to the matching sense's equivalents when the draft left it out. The miss then points to the provisional entry, and the next search reaches it directly through the equivalents generator.
-  - **The lookup log** records the miss under the language it was routed to, so a Spanish search no longer shows up as a missing English word.
+**The lookup decides with SQL only** and answers at once (`ai/provisional.py`, `resolve()`):
+1. **The gate:** at most 4 words, none blocked, each known to the reference data in the search's language (`ref_freq` Zipf ≥ 1.0, `ref_forms`, or English Wiktionary). Anything else is `invalid`.
+2. **The entries it may stand for:** the search and its dictionary forms (*geese* → *goose*, *gave up* → *give up*, lemminflect), matched against `entries.lemma_norm`. The best one decides:
+   - **shown already** under another form: `ready`, with its key;
+   - **approved, and nobody has written it** (`candidate`, `queued`): `generating`, and one AI job writes it after the response;
+   - **approved, and the factory is on it:** `queued`, with its key;
+   - **none approved:** the request check (§6.7) answers `requestable` or `requested` with the headword, or `invalid`.
+3. **The quota** counts each student's searches that reached AI over the last 24 hours (distinct `ref_key`s of successful calls), 30 by default (`AI_SEARCHES_PER_DAY`, or the console), so a Spanish search that takes two calls counts once.
+
+**Generating** (`provisional_entry.v2`):
+- **The headword comes from the seed, never from the model.** The model is told the lemma, part of speech and kind, and writes only the senses: 1–2, one example each, with the es-419 layer. A model can't drift to another word, correct a typo into a headword, or invent one.
+- **The model may decline** a headword it can't show within the content rules (`unsuitable`). A refusal can't improve with retries, so the word goes straight to the factory.
+- **The server builds the document** around the senses: the seed's key, pronunciations from CMUdict and Britfone, a multiword entry's pattern, and `provisional: true`.
+- **Checks:** all of V1–V11, with V11's counts for a short entry. Errors block; warnings lower `quality`. The search must be one of the document's forms.
+- **It never replaces the routine's work.** It publishes only while the entry is still approved and unwritten, keeping its queue priority and seed sources. Provisional entries are leased first (`QUEUE_ORDER`).
+- **One job at a time:** the lookup that starts a job claims the miss (`misses.running_since`), so other lookups answer `generating` without starting another. A claim older than 3 minutes expires; an advisory lock per query backs it up.
+
+**A failed generation** counts an attempt on the miss (`attempts`, `last_attempt_at`, `last_error`; revision 0010):
+- **What counts:** no provider answered, a draft that fails its checks, or any error.
+- **For 10 minutes after each failure,** lookups answer `unavailable` at once, with no AI call. After that, one lookup starts one new attempt.
+- **After 3 failed attempts, or a refusal,** the entry moves to the front of the factory's queue, and lookups answer `queued` with its key.
+- Cool-down, attempts and hand-off are the owner's choices (2026-10-20).
+
+**Searches in Spanish** take their own path [LK-5, LK-6]:
+- **Routing:** a miss is Spanish when it was searched in Spanish (`dir=l1`), or with `dir=auto` when every word is known in Spanish, at least as common there as in English, **and the search isn't an English headword** (Wiktionary or an approved entry). So *pie*, *son*, *actual* or *solo* stay English: this is an English dictionary, and `dir=l1` asks for the Spanish reading. Other student languages have no path yet.
+- **The gate** is the English one, in Spanish (`ref_freq` or `ref_forms`), with the same quota and lock. The miss is a `misses` row with language `es`.
+- **`translate_query`** names the 1–3 English headwords the student most likely means, or `none`, which settles the miss as `invalid`. Translating writes nothing, so it's allowed for any word (the owner's choice, 2026-10-20).
+- **Each headword then follows the English rules:** shown (`ready`), approved and unwritten (AI writes it, told what the student typed), with the factory (`queued`), or, when none is chosen, `requestable` with the English headword (`misses.headword`).
+- **The student's Spanish joins the equivalents only when it's spelled right:** every word must be in Wiktionary's translations or UniMorph, alone or under attached pronouns. The web-frequency list isn't enough, since it holds common typos (*aveces*, *xq*, *hize*). A misspelled search tells the model so, and asks for correct spelling; the next search still finds the entry, through the miss.
+- **The lookup log** records the miss under the language it was routed to.
 
 ### 6.6 The quality loop: flags, reports, signals, audits and the golden set
 
@@ -925,6 +940,34 @@ audits, golden set ───┘
 - **New tables:**
   - `quality_signals (tenant_id, user_id, target_key, entry_key, signal, weight, observed_at)`: append-only, at most one row per user, item, signal and day (aggregate signals have no user);
   - `item_suspicion (target_key primary key, entry_key, score, last_signal_at, last_reviewed_at)`: derived, kept current by a worker job.
+
+### 6.7 Word requests: the owner approves what isn't seeded
+
+A real word nobody seeded waits for the owner (`content/word_requests.py`, revision 0012).
+
+**Requestable** means a missed search whose headword:
+- **is a Wiktionary headword.** The import leaves misspellings out (§3.4), so *recieve* or *definately* never are, and neither is a word no dictionary has;
+- **wasn't rejected,** in the console or while curating the seeds (a seed candidate `reject` or `merge`, with no accepted one);
+- **isn't chosen already** (then §6.5 writes it).
+
+The lookup then answers `requestable` with the headword, and the plugin offers a button.
+
+**A request** (`POST /v1/requests`):
+- **The server decides again.** A request can't add a typo, a word that exists already, or one the owner rejected.
+- **One request per headword** (`word_requests`) gathers every student who asked. Each vote (`word_request_votes`) holds a user ID, the language and the search: never a name.
+- **Each student has 10 requests a day** (`WORD_REQUESTS_PER_DAY`, or the console's `word_requests_per_day`). Asking again for the same word costs nothing.
+- **Later lookups by that student** answer `requested`.
+
+**The owner decides in the console** (§5.5): `GET /v1/admin/requests` lists pending requests, most asked first. Each comes with its evidence: students, searches, example queries, Zipf frequency, the open lists that name it, its seed candidates' decisions, and Wiktionary's parts of speech, likeliest first.
+- **Approve** with the headword, part of speech and kind:
+  - the entry is queued (or kept), approved, and moved to the front of the factory's queue;
+  - AI writes its Beta right away, and the searches that led to it find it;
+  - the routine writes the full entry in its next run;
+  - other unapproved entries AI made for the same headword are retired.
+- **Reject:** the headword is closed for good. Students see "not found" and can't request it again, and any unapproved entry for it is retired, its key kept forever.
+- **Every decision** is audited (`request.approve`, `request.reject`) with the token's name and the person signed in.
+
+**Entries from before reviews:** revision 0012 left unapproved the Beta entries AI wrote for words nobody seeded. They're hidden (the owner's choice, 2026-10-20) and wait in the queue as requests of origin `ai_entry`, with their first definition shown. Approving shows them again at once; rejecting retires them.
 
 ---
 
@@ -1243,7 +1286,8 @@ volumes: { caddy_data: {} }
 | Threat | Control |
 |---|---|
 | Spoofed identity | `bbb` context accepted only with the proxy secret, from the BBB server's IP; identity comes from BBB's own session check |
-| Abuse of AI or provisional endpoints | Per-student quotas, the global cap, gate checks, advisory locks |
+| Abuse of AI or provisional endpoints | Per-student quotas, the global cap, gate checks, advisory locks; AI writes only words the owner chose |
+| Junk or unwanted headwords from student searches | No search adds a word: a real headword becomes a request (Wiktionary only, so no typos), capped per student, and only the owner's approval queues it (§6.7) |
 | Report spam or vandalism by hiding | Reports: one open report per person per item, 10 a day, none from inactive accounts, and they never change content directly. Hides: verified teachers only (LMS role). Hides and flags: 20 a day per person, logged, undoable. Signals: one per user, item, signal and day |
 | Prompt injection through student text | Strict output schemas, no tools, no secrets in prompts, output validation |
 | Injection through grounding data | Wiktionary text is treated as data; a factory token can only reach `/v1/factory/*` |

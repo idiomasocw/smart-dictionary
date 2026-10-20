@@ -96,7 +96,7 @@ During the pilot, the plugin loads only in chosen groups' meetings:
 
 ## 4. L6: the owner's console (dictionary implements, LMS calls)
 
-The LMS gives the owner a console for the dictionary: every entry with its definition, by letter and status; the pipeline's state, including what needs repair and why; missed searches; and the few settings the owner can change. The dictionary serves the data at `/v1/admin/*`, and the LMS backend calls it and renders the pages.
+The LMS gives the owner a console for the dictionary: every entry with its definition, by letter and status; the pipeline's state, including what needs repair and why; missed searches; the **word requests** the owner approves or rejects; and the few settings the owner can change. The dictionary serves the data at `/v1/admin/*`, and the LMS backend calls it and renders the pages.
 
 ### Auth and safety
 
@@ -117,17 +117,25 @@ All `GET` unless marked. Pages are numbered from 1, `per_page` is at most 200 (d
 
 | Call | Parameters | Returns |
 |---|---|---|
-| `/v1/admin/stats` | — | Entries by status with a `meaning` for each, `total`, `published_last_24h`, `waiting`, `days_to_clear`; missed searches by status and `stuck`; AI use (`month_spend_usd`, `monthly_budget_usd`, `searches_per_day`, `searches_last_24h`, `students_at_cap`, `provider_order`, `providers_with_keys`, `active_providers`, `calls_last_24h` by provider and outcome); audio `uploaded` and `waiting`; the last 10 factory runs |
-| `/v1/admin/entries` | `letter` (`a`–`z`, or `other` for digits and symbols), `status`, `q` (the start of the headword, any case or accents), `sort` (`lemma` or `updated`, the newest change first), `page`, `per_page` | Entries: `key`, `lemma`, `pos`, `kind`, `homograph`, `cefr`, `status`, `quality`, `attempts`, `definition` (the first sense's, null until written), `senses`, `problems` (why the latest submission was sent back, for `needs_repair` and `quarantined`), `updated_at`, `published_at` |
+| `/v1/admin/stats` | — | Entries by status with a `meaning` for each, `total`, `published_last_24h`, `waiting`, `days_to_clear`, `unapproved` (AI entries hidden until their request is decided); `requests` (`pending`, `pending_ai_entries`, `approved`, `rejected`); missed searches by status and `stuck`; AI use (`month_spend_usd`, `monthly_budget_usd`, `searches_per_day`, `searches_last_24h`, `students_at_cap`, `provider_order`, `providers_with_keys`, `active_providers`, `calls_last_24h` by provider and outcome); audio `uploaded` and `waiting`; the last 10 factory runs |
+| `/v1/admin/entries` | `letter` (`a`–`z`, or `other` for digits and symbols), `status`, `q` (the start of the headword, any case or accents), `sort` (`lemma` or `updated`, the newest change first), `page`, `per_page` | Entries: `key`, `lemma`, `pos`, `kind`, `homograph`, `cefr`, `status`, `approved` (false: hidden, waiting for a request's decision), `quality`, `attempts`, `definition` (the first sense's, null until written), `senses`, `problems` (why the latest submission was sent back, for `needs_repair` and `quarantined`), `updated_at`, `published_at` |
 | `/v1/admin/entries/letters` | `status` | 27 rows, `a`–`z` then `other`, each with its `count`, zeros included |
 | `/v1/admin/entries/{key}` | — | One entry's row, plus `priority`, `freq_zipf`, `sources`, `created_at`, `lease_expires_at`, the full `doc` (null until written), and its last 20 `revisions`, each with `outcome`, `score`, `problems`, `warnings`, `produced_by` and the full `qa` |
 | `/v1/admin/misses` | `status`, `stuck` (`true`: AI gave up and no seed covers the word), `q`, `page`, `per_page` | Missed searches, the latest first: `tenant`, `language`, `query`, `hits`, `status`, `entry_key`, `attempts`, `stuck`, `last_error`, `first_seen`, `last_seen`, `last_attempt_at` |
+| `/v1/admin/requests` | `status` (`pending` by default, `approved`, `rejected`), `origin` (`student`, `ai_entry`), `q`, `page`, `per_page` | Word requests, pending first and most asked first: `id`, `lemma`, `pos` and `kind` (the suggestion, or what was approved), `origin`, `status`, `entry_key`, `students` (how many asked), `searches`, `queries` (up to 5 searches that led here), `zipf`, `lists` (open lists naming it, with their level), `seed_decisions`, `options` (Wiktionary's `{pos, kind}`, likeliest first), `definition` (for `ai_entry`: the hidden Beta's), `first_asked_at`, `last_asked_at`, `decided_at`, `decided_by`, `note` |
+| `POST /v1/admin/requests/{id}/approve` | Body `{"lemma", "pos", "kind", "note"?}`, header `X-Admin-Actor` | The request, `approved`, with its `entry_key`. The word is queued first in the factory's queue, and AI writes its Beta at once |
+| `POST /v1/admin/requests/{id}/reject` | Body `{"note"?}`, header `X-Admin-Actor` | The request, `rejected`. Closed for good; an `ai_entry` is retired |
 | `/v1/admin/settings` | — | `settings` (below), `known_providers`, `providers_with_keys` and `applies_within_seconds` |
 | `PUT /v1/admin/settings/{name}` | Body `{"value": …}`, header `X-Admin-Actor` | The setting as it is now |
 | `DELETE /v1/admin/settings/{name}` | Header `X-Admin-Actor` | The setting, back on its default |
-| `/v1/admin/audit` | `page`, `per_page` | Changes, newest first: `created_at`, `client`, `actor`, `action` (`setting.set` or `setting.reset`), `target`, `before`, `after` |
+| `/v1/admin/audit` | `page`, `per_page` | Changes, newest first: `created_at`, `client`, `actor`, `action` (`setting.set`, `setting.reset`, `request.approve` or `request.reject`), `target`, `before`, `after` |
 
-Entry statuses: `published`, `provisional`, `generating`, `validating`, `queued`, `needs_repair`, `quarantined`, `candidate`, `retired`. Missed-search statuses: `pending`, `provisional`, `published`, `queued`, `invalid`.
+Entry statuses: `published`, `provisional`, `generating`, `validating`, `queued`, `needs_repair`, `quarantined`, `candidate`, `retired`. Missed-search statuses: `pending`, `provisional`, `published`, `queued`, `requestable`, `invalid`. Request statuses: `pending`, `approved`, `rejected`; origins: `student` (students asked) and `ai_entry` (a Beta AI wrote before reviews existed, hidden until decided).
+
+**Word requests** (dictionary design §6.7). AI writes entries only for words the owner chose. A real word a student searched for that nobody seeded becomes a request, and only the owner's approval adds it:
+- **Approve** with `lemma` as requested (casing may change), `pos` from `noun`, `verb`, `adjective`, `adverb`, `pronoun`, `determiner`, `preposition`, `conjunction`, `interjection`, `numeral`, `phrase`, and `kind` from `word`, `phrasal_verb`, `idiom`, `phrase`. Offer `options` as the choices, the first selected. A `phrasal_verb` takes `verb`, and an `idiom` or `phrase` takes `phrase`.
+- **Reject** closes the word: students can't request it again.
+- **Each is final:** deciding a request twice answers 409.
 
 **Settings.** Each one has `name`, `kind` (`providers`, `integer` or `number`), `description`, `minimum`, `maximum` (null for `providers`), `value` (what applies now), `default` (the dictionary's environment), `overridden`, `updated_at` and `updated_by`.
 
@@ -136,6 +144,7 @@ Entry statuses: `published`, `provisional`, `generating`, `validating`, `queued`
 | `ai_provider_order` | List of names from `known_providers`, first tried first | Each once; `[]` turns request-time AI off. A provider missing from `providers_with_keys` is skipped |
 | `ai_searches_per_day` | Whole number: missed searches each student can send to AI in 24 hours | 0–200 |
 | `ai_monthly_budget_usd` | The month's cap on paid AI, in USD | 0–50 |
+| `word_requests_per_day` | Whole number: words each student can request in 24 hours | 0–50 |
 | `factory_publish_threshold` | The score a factory entry needs to publish | 0.5–1 |
 
 A change applies within `applies_within_seconds` (15), with no deploy. `DELETE` goes back to `default`.
@@ -175,8 +184,9 @@ RFC 9457 `application/problem+json`, with a stable `code`:
 | Status | `code` | When | What the console shows |
 |---|---|---|---|
 | 401 | `unauthorized` | Missing, wrong or revoked token | "The dictionary rejected the console's token": an operator problem, not the user's |
-| 404 | `not_found` | No such entry or setting; also any call from an address outside `ADMIN_ALLOWED_IPS` | "Not found" |
-| 422 | `invalid_value` | A setting out of bounds; `detail` says why, e.g. `expected a value from 0 to 50` | `detail`, next to the field |
+| 404 | `not_found` | No such entry, request or setting; also any call from an address outside `ADMIN_ALLOWED_IPS` | "Not found" |
+| 409 | `conflict` | The request was decided already, or its key was retired; `detail` says which | `detail`, then reload the request |
+| 422 | `invalid_value` | A setting out of bounds, or an approval whose headword or part of speech can't make an entry; `detail` says why, e.g. `expected a value from 0 to 50` | `detail`, next to the field |
 | 422 | `invalid_request` | A bad parameter, body or `X-Admin-Actor` | A bug in the LMS: log it |
 
 ---
@@ -205,5 +215,6 @@ Each becomes its own section here before anyone implements it.
 - [ ] L6: the console's routes refuse everyone but the owner (or super-admin) with the LMS's own 401/403, before any call to the dictionary.
 - [ ] L6: `DICTIONARY_ADMIN_TOKEN` appears in no browser response, page source, bundle or log.
 - [ ] L6: the LMS calls only the listed paths, and validates `letter`, `status`, `q`, `page` and `per_page` before passing them on.
-- [ ] L6: every `PUT` and `DELETE` sends `X-Admin-Actor` with the signed-in person's ID.
+- [ ] L6: every `PUT`, `DELETE` and `POST` sends `X-Admin-Actor` with the signed-in person's ID.
+- [ ] L6: approving and rejecting a request each ask for confirmation in the LMS's own modal, and show the 409 `detail` when it was decided elsewhere.
 - [ ] L6: a dictionary 401, 404, 422 or timeout shows a message and never breaks the rest of the LMS.

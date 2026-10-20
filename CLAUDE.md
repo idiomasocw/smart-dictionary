@@ -20,6 +20,7 @@ An English learner's dictionary for OneCulture World. Entries are pre-populated 
 - **Content keys** (entries, senses, examples) are stable forever: never reuse or renumber them.
 - **The LMS integrates through HTTP contracts only** (05 §6). Never read LMS tables, and never store student names, emails or phones.
 - **No LLM in the lookup path.** Request-time AI goes through the gateway, with its $5/month cap.
+- **AI writes entries only for words the owner chose:** seeded, or approved in the console (`entries.approved_at`). A student's search never adds a word; a real one becomes a word request (design §6.5, §6.7).
 - **Open datasets are facts only.** `ref_wiktionary.glosses` is CC BY-SA text: use it for internal hints and checks, but never serve it or copy it into entries (`data/README.md`).
 - **Secrets** never go in the repo; `backend/.env` is local only.
 - **Git:** the owner runs every `git add` and `git commit`. Propose the exact commands, grouped into logical commits, and never add Co-Authored-By or other AI attribution lines.

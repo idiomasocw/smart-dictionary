@@ -236,7 +236,7 @@ docker compose logs --tail 100 --follow api
 cat current-image
 ```
 
-**Secrets and AI keys.** Each deploy copies every parameter under `/smart-dictionary/prod/app/` into the API's environment. The AI features read `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY` and `GROQ_API_KEY` from there; today that's the missing-word entries (design §6.5).
+**Secrets and AI keys.** Each deploy copies every parameter under `/smart-dictionary/prod/app/` into the API's environment. The AI features read `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY` and `GROQ_API_KEY` from there; today that's the Beta entries for words you seeded or approved (design §6.5). A word nobody chose is never written by AI: students may request it, and you decide in the LMS console (design §6.7).
 - **The order:** DeepSeek first, then Claude (Anthropic), Gemini and Groq, each tried when the one before fails. The fastest go first: these answers are stand-ins, and the routine writes the real entries. To change the order, see "The AI providers' order" below.
 - **Each provider is optional.** One without a key is skipped, and with no key at all a missing word just isn't generated; lookups never depend on AI.
 - **Any one key is enough to start;** the others take over when the one before fails. Once the month's $5 is spent, every paid provider is skipped and only Groq's free tier answers.
