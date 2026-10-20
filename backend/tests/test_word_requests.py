@@ -16,7 +16,7 @@ from smart_dictionary.core import tunables
 from smart_dictionary.db.sync import connect
 from smart_dictionary.factory import lease, tokens
 from smart_dictionary.factory.submit import Submission, submit
-from test_provisional import KETTLE, STUDENT, Model, kettle_world, lookup, row
+from test_provisional import KETTLE, STUDENT, Model, kettle_world, lookup, row, seed
 
 OTHER_STUDENT = {"x-bbb-ext-user": "person-2"}
 PERSON = "3f2c9a0e-5b7d-4c1a-9e2f-8d6b1a4c7e90"
@@ -251,3 +251,46 @@ def test_a_beta_entry_stays_shown_while_the_routine_rewrites_it(
         assert lookup(client, "kettles")["groups"][0]["items"][0]["entry_key"] == "en:kettle:n"
         card = client.get("/v1/entries/en:kettle:n", headers=STUDENT)
         assert card.status_code == 200 and card.json()["provisional"] is True
+
+
+def test_the_owner_adds_retires_and_requeues_entries(migrated_database_url, anyio_backend_options):
+    kettle_world(seeded=False)
+    with connect() as conn:  # by the way, as a phrase; and a quarantined A1 verb
+        seed(conn, "en:by_the_way:phr", "by the way", "phrase", kind="phrase")
+        seed(conn, "en:kill:v", "kill", "verb", status="quarantined")
+        conn.execute("update entries set attempts = 2 where key = 'en:kill:v'")
+    with api(anyio_backend_options) as client:
+        auth = admin()
+        assert ask(client, "kettles").status_code == 202  # a student asked first
+        word = {"lemma": "kettle", "pos": "noun", "kind": "word"}
+        added = client.post("/v1/admin/entries", json=word, headers=auth)
+        assert added.status_code == 201, added.text
+        body = added.json()
+        assert (body["key"], body["status"], body["approved"], body["priority"]) == (
+            "en:kettle:n", "queued", True, 100_000,
+        )  # fmt: skip
+        # The student's request is answered by it.
+        assert row("select status, entry_key from word_requests") == ("approved", "en:kettle:n")
+        assert client.post("/v1/admin/entries", json=word, headers=auth).status_code == 409
+        idiom = {"lemma": "by the way", "pos": "phrase", "kind": "idiom"}
+        twin = client.post("/v1/admin/entries", json=idiom, headers=auth)
+        assert (twin.status_code, twin.json()["detail"]) == (
+            409, "en:by_the_way:phr is the same expression",
+        )  # fmt: skip
+
+        retired = client.post("/v1/admin/entries/en:kettle:n/retire", json={"note": "dup"},
+                              headers=auth)  # fmt: skip
+        assert retired.status_code == 200 and retired.json()["status"] == "retired"
+        assert lookup(client, "kettles")["provisional"]["status"] == "invalid"  # not requestable
+        assert client.post("/v1/admin/entries/en:kettle:n/retire", json={},
+                           headers=auth).status_code == 409  # fmt: skip
+
+        requeued = client.post("/v1/admin/entries/en:kill:v/requeue", json={}, headers=auth)
+        assert requeued.status_code == 200, requeued.text
+        assert (requeued.json()["status"], requeued.json()["attempts"]) == ("queued", 0)
+        assert client.post("/v1/admin/entries/en:kill:v/requeue", json={},
+                           headers=auth).status_code == 409  # fmt: skip
+        assert client.post("/v1/admin/entries/en:none:n/retire", json={},
+                           headers=auth).status_code == 404  # fmt: skip
+    actions = row("select array_agg(action order by id) from admin_audit")
+    assert actions == (["entry.add", "entry.retire", "entry.requeue"],)

@@ -44,6 +44,11 @@ where c.pos is not null and c.kind is not null and c.entry_id is null
     select from entries e
     where e.language = 'en' and e.lemma_norm = c.lemma_norm and e.pos = c.pos
       and e.kind = c.kind and e.homograph = c.homograph)
+  -- One multiword expression, one entry: never by the way as an idiom beside the phrase.
+  and not exists (
+    select from entries e
+    where e.language = 'en' and e.lemma_norm = c.lemma_norm and e.pos = c.pos
+      and e.kind <> c.kind and e.kind <> 'word' and c.kind <> 'word' and e.status <> 'retired')
 """
 
 CHUNK = 2000

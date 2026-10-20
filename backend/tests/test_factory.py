@@ -337,3 +337,21 @@ def test_factory_api_checks_and_submits(migrated_database_url, anyio_backend_opt
         assert again.json()["code"] == "batch_closed"
         # Published: the read API serves it.
         assert client.get("/v1/entries/en:go:v").status_code == 200
+
+
+def test_an_expression_is_never_queued_twice_as_two_kinds(migrated_database_url):
+    with connect() as conn:
+        world(conn)
+        # A hand-written fixture has "by the way" as a phrase; a list seeds it as an idiom.
+        conn.execute(
+            "insert into entries (key, language, lemma, lemma_norm, pos, kind, status,"
+            " approved_at) values ('en:by_the_way:phr', 'en', 'by the way', 'by the way',"
+            " 'phrase', 'phrase', 'published', now())"
+        )
+        conn.execute(
+            "insert into seed_candidates (lemma, lemma_norm, pos, kind, tier, sources, originals)"
+            " values ('by the way', 'by the way', 'phrase', 'idiom', 0, '{owner:idioms.txt}',"
+            " '{by the way}')"
+        )
+        assert queue(conn, lemmas=["by the way"]) == []
+        assert _scalar(conn, "select count(*) from entries where lemma_norm = 'by the way'") == 1

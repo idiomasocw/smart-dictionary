@@ -4,7 +4,8 @@ state, decides word requests (design §6.7) and changes a few settings.
 - **Who:** a bearer token with the `admin` scope, required by the router itself, so no route
   can be added without it. The BBB proxy secret and factory tokens don't open it.
 - **What it never does:** name a student, show a secret, or create a token. It changes only
-  the settings in core.tunables and the decision on a word request.
+  the settings in core.tunables, the decision on a word request, and single entries: add a
+  word, retire one, requeue a quarantined one.
 - **Every change and decision** is audited with the token's name and `X-Admin-Actor`, the
   LMS's person ID of whoever was signed in. The LMS vouches for that person; the token is
   what's checked.
@@ -18,7 +19,7 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from smart_dictionary.admin import audit, browse, overview
+from smart_dictionary.admin import audit, browse, curation, overview
 from smart_dictionary.admin import settings as admin_settings
 from smart_dictionary.ai import provisional
 from smart_dictionary.ai.gateway import Gateway, get_gateway
@@ -254,6 +255,21 @@ class Rejection(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
+class NewEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lemma: str = Field(min_length=1, max_length=80)
+    pos: POS
+    kind: Kind
+    note: str | None = Field(default=None, max_length=500)
+
+
+class EntryAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str | None = Field(default=None, max_length=500)
+
+
 class SettingOut(BaseModel):
     name: str
     kind: Literal["providers", "integer", "number"]
@@ -329,6 +345,64 @@ def entry(conn: SyncConnection, key: str) -> EntryDetail:
     if found is None:
         raise ApiError(404, "not_found", "No such entry")
     return EntryDetail.model_validate(found)
+
+
+@router.post("/entries", status_code=201)
+def entry_add(
+    conn: SyncConnection,
+    client: AdminClient,
+    settings: Annotated[Settings, Depends(get_settings)],
+    body: NewEntry,
+    actor: Actor = None,
+) -> EntryDetail:
+    """Add a word you want: queued, approved and first in the factory's queue."""
+    lemma = " ".join(body.lemma.split())
+    try:
+        added = curation.add(conn, lemma=lemma, pos=body.pos, kind=body.kind,
+                             decided_by=audit.decided_by(client, actor), note=body.note,
+                             tenant=settings.default_tenant)  # fmt: skip
+    except ValueError as error:
+        raise ApiError(422, "invalid_value", "Can't add it like this", str(error)) from None
+    except word_requests.Conflict as error:
+        raise ApiError(409, "conflict", "Can't add it", str(error)) from None
+    after = {"lemma": lemma, "pos": body.pos, "kind": body.kind, "note": body.note}
+    audit.record(conn, client, actor, "entry.add", added.key, None, after)
+    conn.commit()
+    return _entry_detail(conn, added.key)
+
+
+@router.post("/entries/{key}/retire")
+def entry_retire(
+    conn: SyncConnection, client: AdminClient, key: str, body: EntryAction, actor: Actor = None
+) -> EntryDetail:
+    """Take a duplicate or an unwanted word out of the dictionary; its key is never reused."""
+    try:
+        before = curation.retire(conn, key)
+    except LookupError:
+        raise ApiError(404, "not_found", "No such entry") from None
+    except word_requests.Conflict as error:
+        raise ApiError(409, "conflict", "Can't retire it", str(error)) from None
+    audit.record(conn, client, actor, "entry.retire", key, {"status": before},
+                 {"status": "retired", "note": body.note})  # fmt: skip
+    conn.commit()
+    return _entry_detail(conn, key)
+
+
+@router.post("/entries/{key}/requeue")
+def entry_requeue(
+    conn: SyncConnection, client: AdminClient, key: str, body: EntryAction, actor: Actor = None
+) -> EntryDetail:
+    """Give a quarantined entry another go, once its cause is fixed."""
+    try:
+        status = curation.requeue(conn, key)
+    except LookupError:
+        raise ApiError(404, "not_found", "No such entry") from None
+    except word_requests.Conflict as error:
+        raise ApiError(409, "conflict", "Can't requeue it", str(error)) from None
+    audit.record(conn, client, actor, "entry.requeue", key, {"status": "quarantined"},
+                 {"status": status, "note": body.note})  # fmt: skip
+    conn.commit()
+    return _entry_detail(conn, key)
 
 
 @router.get("/misses")
@@ -470,6 +544,10 @@ def audit_log(conn: SyncConnection, page: Page = 1, per_page: PerPage = 50) -> A
     rows, total = browse.audit(conn, page=page, per_page=per_page)
     return AuditPage(items=[AuditRow.model_validate(row) for row in rows],
                      **_paging(page, per_page, total))  # fmt: skip
+
+
+def _entry_detail(conn: SyncConnection, key: str) -> EntryDetail:
+    return EntryDetail.model_validate(browse.entry(conn, key))
 
 
 def _request_row(conn: SyncConnection, request_id: uuid.UUID) -> RequestRow:
