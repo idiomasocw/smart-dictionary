@@ -1,5 +1,8 @@
 """Queue seed candidates as entries for the factory (design §6.1 step 8, §3.3).
 
+Queuing is the owner's choice, so every queued entry is approved: students may see it once it's
+written, and AI may write its Beta when a student searches for it (design §6.5).
+
 A queued entry has a key, its facts and a priority, but no document: the routine leases it,
 writes it and submits it. Candidates wait for the curation run when they lack a part of
 speech or kind, or when the two can't form an entry (a `word` marked `phrase`, as the entry
@@ -24,6 +27,8 @@ from smart_dictionary.core.ids import new_id
 from smart_dictionary.core.keys import entry_key
 
 LEVEL_RANK = {"A1": 6, "A2": 5, "B1": 4, "B2": 3, "C1": 2, "C2": 1}
+# A word students asked for jumps the factory's queue: above any seed's priority.
+ASKED_PRIORITY = 100_000
 
 ELIGIBLE = """
 select c.id, c.lemma, c.lemma_norm, c.pos, c.kind::text as kind, c.homograph, c.tier, c.zipf,
@@ -46,10 +51,10 @@ CHUNK = 2000
 # unlinked; sources travel as JSON because Postgres arrays of arrays must be rectangular.
 INSERT = """
 insert into entries (id, key, language, lemma, lemma_norm, pos, kind, homograph, cefr,
-                     freq_zipf, priority, status, sources)
+                     freq_zipf, priority, status, sources, approved_at, approved_by)
 select r.id, r.key, 'en', r.lemma, r.lemma_norm, r.pos, r.kind::entry_kind, r.homograph,
        r.cefr, r.zipf, r.priority, 'queued',
-       array(select jsonb_array_elements_text(r.sources::jsonb))
+       array(select jsonb_array_elements_text(r.sources::jsonb)), now(), 'seeds'
 from unnest(%s::uuid[], %s::text[], %s::text[], %s::text[], %s::text[], %s::text[],
             %s::smallint[], %s::text[], %s::numeric[], %s::integer[], %s::text[])
   as r(id, key, lemma, lemma_norm, pos, kind, homograph, cefr, zipf, priority, sources)

@@ -52,6 +52,7 @@ def lease(conn: psycopg.Connection, size: int, label: str | None = None) -> Batc
     rows = conn.execute(
         "with picked as ("
         "  select id from entries where status in ('provisional', 'needs_repair', 'queued')"
+        "  and approved_at is not null"
         f"  order by {QUEUE_ORDER} limit %s for update skip locked)"
         " update entries e set leased_from = e.status, status = 'generating',"
         " lease_batch_id = %s, lease_expires_at = now() + %s, updated_at = now()"

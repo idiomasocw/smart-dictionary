@@ -29,9 +29,11 @@ def publish(
     sources: list[str] | None = None,
     quality: float | None = None,
     status: Literal["published", "provisional"] = "published",
+    approved_by: str = "owner",
 ) -> uuid.UUID:
     """Upsert the entry as published (or provisional: an AI stand-in for a missing word,
-    design §6.5), record a revision and rebuild its projections."""
+    design §6.5), record a revision and rebuild its projections. A new key is approved as
+    `approved_by` (fixtures, tests); an existing entry keeps its approval."""
     payload = doc.model_dump(mode="json")
     homograph = parse_key(doc.key).homograph
     zipf_row = conn.execute(
@@ -39,8 +41,10 @@ def publish(
     ).fetchone()
     row = conn.execute(
         "insert into entries (id, key, language, lemma, lemma_norm, pos, kind, homograph, cefr,"
-        " freq_zipf, priority, status, doc, sources, quality, published_at)"
-        " values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::entry_status, %s, %s, %s, now())"
+        " freq_zipf, priority, status, doc, sources, quality, published_at, approved_at,"
+        " approved_by)"
+        " values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::entry_status, %s, %s, %s, now(),"
+        " now(), %s)"
         " on conflict (key) do update set lemma = excluded.lemma, lemma_norm = excluded.lemma_norm,"
         " pos = excluded.pos, kind = excluded.kind, cefr = excluded.cefr,"
         " freq_zipf = coalesce(excluded.freq_zipf, entries.freq_zipf), status = excluded.status,"
@@ -64,6 +68,7 @@ def publish(
             Jsonb(payload),
             sources or [],
             quality,
+            approved_by,
         ),
     ).fetchone()
     assert row is not None

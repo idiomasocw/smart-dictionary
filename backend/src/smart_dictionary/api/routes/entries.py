@@ -10,6 +10,7 @@ from smart_dictionary.api.auth import current_principal
 from smart_dictionary.api.deps import Connection
 from smart_dictionary.api.errors import ApiError
 from smart_dictionary.content.cards import AudioLinks, EntryCard, project_card
+from smart_dictionary.content.visibility import live
 from smart_dictionary.core.keys import parse_key
 from smart_dictionary.core.settings import L1Variety, Settings, get_settings
 from smart_dictionary.search.service import escape_like
@@ -17,8 +18,7 @@ from smart_dictionary.search.service import escape_like
 router = APIRouter(prefix="/v1", tags=["entries"], dependencies=[Depends(current_principal)])
 
 ENTRY = text(
-    "select doc, content_version, freq_zipf from entries"
-    " where key = :key and status in ('published', 'provisional')"
+    f"select doc, content_version, freq_zipf from entries e where e.key = :key and {live()}"
 )
 # Only uploaded files: a link must never point at a file the CDN doesn't have yet.
 AUDIO = text(

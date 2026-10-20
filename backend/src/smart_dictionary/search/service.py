@@ -15,6 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from smart_dictionary.content.cards import VARIETY_LANGUAGE, preview
+from smart_dictionary.content.visibility import live
 from smart_dictionary.core.principal import Principal
 from smart_dictionary.core.text import norm
 
@@ -22,7 +23,7 @@ Direction = Literal["auto", "en", "l1"]
 Side = Literal["en", "l1"]
 
 BASE_SCORES = {"exact": 1.0, "form": 0.9, "equivalent": 0.85}
-_LIVE = "e.status in ('published', 'provisional')"
+_LIVE = live("e")
 _ENTRY = "e.key, e.lemma, e.pos, e.kind, e.cefr, e.freq_zipf, e.status, e.doc"
 
 FORMS = text(f"""
@@ -258,7 +259,8 @@ async def _did_you_mean(conn: AsyncConnection, query: Query) -> list[Suggestion]
 def _item(
     row: Any, variety: str, via: str, base: float, sense_key: str | None = None
 ) -> LookupItem:
-    provisional = row.status == "provisional"
+    # A Beta entry stays Beta while the routine rewrites it: the document says so.
+    provisional = bool((row.doc or {}).get("provisional"))
     score = base + min(float(row.freq_zipf or 0), 7.0) / 70 - (0.05 if provisional else 0.0)
     matched_sense, short_gloss, equivalent = preview(row.doc, variety, sense_key)
     return LookupItem(

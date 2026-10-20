@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     # Missed searches a student can send to AI in 24 hours (design §7.1); a Spanish search
     # counts once. 30 since DeepSeek answers first (owner's choice, 2026-10-20).
     ai_searches_per_day: int = Field(default=30, ge=0)
+    # Words each student can request in 24 hours, for the owner to review (design §6.7).
+    word_requests_per_day: int = Field(default=10, ge=0)
     # Audio (design §10.4). Cards link uploaded files under audio_base_url (the CDN, from
     # SSM). The audio job reads Kokoro from audio_model_dir, writes files to audio_outbox for
     # the host's uploader, and can be held to a few CPU threads.

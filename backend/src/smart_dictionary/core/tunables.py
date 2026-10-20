@@ -90,6 +90,13 @@ TUNABLES: dict[str, Tunable] = {
             50,
         ),
         Tunable(
+            "word_requests_per_day",
+            "integer",
+            "Words each student can request in 24 hours, for you to review.",
+            0,
+            50,
+        ),
+        Tunable(
             "factory_publish_threshold",
             "number",
             "The quality score a factory entry needs to publish.",
