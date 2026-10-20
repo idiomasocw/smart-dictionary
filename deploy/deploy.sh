@@ -8,7 +8,7 @@
 # 2. Pulls the image and applies the migrations as the owner.
 # 3. Starts the new containers and waits for the API's health check. If it doesn't pass,
 #    the previous image goes back up and the script fails. Migrations stay applied, so
-#    each one must work with the code before it.
+#    each one must work with the code before it. A changed Caddyfile restarts Caddy.
 # 4. Starts the audio container, and installs the timer that uploads its files
 #    (audio-upload.sh). Audio trouble is reported but never fails the deploy.
 set -euo pipefail
@@ -70,6 +70,14 @@ else
       caddy api && echo "rolled back to $previous" >&2
   fi
   exit 1
+fi
+
+# Compose recreates a container when its settings change, not when a file it mounts does,
+# so a changed Caddyfile applies only after a restart, which takes Caddy away for a second.
+if ! cmp -s Caddyfile .caddyfile-applied; then
+  docker compose restart caddy
+  cp Caddyfile .caddyfile-applied
+  echo "restarted caddy for the new Caddyfile"
 fi
 
 # Audio (design §10.4). The container writes to the outbox as its own user (uid 10001);
