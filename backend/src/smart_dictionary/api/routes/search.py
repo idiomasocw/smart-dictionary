@@ -33,7 +33,9 @@ class LookupResponse(BaseModel):
     query: QueryEcho
     groups: list[LookupGroup]
     did_you_mean: list[Suggestion]
-    # Only when nothing matched: whether a provisional entry is on its way [LK-10].
+    # When nothing matched: whether a provisional entry is on its way [LK-10]. When something
+    # matched: `generating`, with its key, while AI writes another entry for exactly this
+    # headword (absorbing the adjective, found only as a form of absorb); search again for it.
     provisional: ProvisionalStatus | None = None
 
 
@@ -57,12 +59,14 @@ async def lookup(
     query = _query(q, direction, variety or settings.default_variety)
     groups, did_you_mean = await service.lookup(conn, query)
     status = language = None
+    # Decided with SQL only; any AI work runs after the response (NF-1).
     if not groups:
-        # Decided with SQL only; any AI work runs after the response (NF-1).
         language = await provisional.searched_in(conn, query)
         status, job = await provisional.on_miss(conn, principal, query, gateway, language)
-        if job is not None:
-            background.add_task(provisional.generate, job, gateway)
+    else:
+        status, job = await provisional.also_writing(conn, principal, query, gateway)
+    if job is not None:
+        background.add_task(provisional.generate, job, gateway)
     latency_ms = round((time.perf_counter() - started) * 1000)
     await service.log_lookup(
         conn, principal, query, groups, did_you_mean, latency_ms, miss_language=language

@@ -15,6 +15,13 @@ A lookup that finds nothing still answers at once, decided with SQL only (NF-1):
 - **quota_exceeded** and **unavailable:** the student's daily AI searches are used up; AI is
   off, or failed this word a moment ago (it tries again after COOL_DOWN).
 
+**The headword as searched comes first.** *absorbing* is a form of the verb *absorb* and an
+adjective of its own; a search for it stands for the adjective, whatever their places in the
+queue (_choose). And a search that found entries can still name one nobody has written: once
+*absorb* is shown, *absorbing* finds it through its form, and *light* finds the noun while the
+adjective waits. AI then writes that entry too (also_writing), so the next search shows it
+first, as the exact match.
+
 **Approved words only.** The owner chose a word by seeding it (the curated lists, `seeds
 queue`) or by approving a request. AI writes the entry for that row: its lemma, part of speech
 and kind come from the seed, never from the model, so neither a typo nor an invented word can
@@ -37,6 +44,7 @@ the factory.
 import logging
 import uuid
 from dataclasses import asdict, dataclass
+from itertools import groupby
 from pathlib import Path
 from typing import Any, Literal
 
@@ -181,6 +189,7 @@ class Target:
     status: str
     approved: bool
     shown: bool
+    lemma_norm: str
 
 
 @dataclass(frozen=True)
@@ -220,7 +229,7 @@ select exists (select 1 from ref_wiktionary where word_norm = any(cast(:lemmas a
 
 _TARGETS = """
 select e.key, e.lemma, e.pos, e.kind::text, e.status::text, e.approved_at is not null,
-       {shown}
+       {shown}, e.lemma_norm
 from entries e
 where e.language = 'en' and e.status <> 'retired'
   and (e.lemma_norm = any({lemmas}) or e.key = {key})
@@ -290,7 +299,7 @@ async def resolve(
         lemmas = word_requests.headwords(q)
         # A word the owner chose is written even when it's blocked (kill, drunk): the blocklist
         # keeps such words out of requests and examples, not out of the dictionary.
-        found = _choose(await _targets(conn, lemmas, None))
+        found = _choose(await _targets(conn, lemmas, None), lemmas)
         if found is not None:
             return found
         candidate = await word_requests.requestable(conn, lemmas)
@@ -307,7 +316,7 @@ async def resolve(
     if miss.status == "invalid":
         return INVALID
     lemmas = word_requests.headwords(norm(miss.headword)) if miss.headword else []
-    found = _choose(await _targets(conn, lemmas, miss.entry_key))
+    found = _choose(await _targets(conn, lemmas, miss.entry_key), lemmas, miss.entry_key)
     if found is not None:
         return found
     if miss.status == "requestable":
@@ -341,6 +350,36 @@ async def on_miss(
         headword = found.candidate.lemma if status != "invalid" else None
         return ProvisionalStatus(status=status, headword=headword), None
     return await _start(conn, principal, query, gateway, language, found.key)
+
+
+# An approved entry nobody has written whose headword is exactly the search.
+UNWRITTEN = text("""
+select e.key from entries e
+where e.language = 'en' and e.lemma_norm = :q and e.approved_at is not null
+  and e.status::text in ('candidate', 'queued') and e.published_at is null
+order by e.priority desc, e.key
+limit 1
+""")
+
+
+async def also_writing(
+    conn: AsyncConnection, principal: Principal, query: Query, gateway: Gateway
+) -> tuple[ProvisionalStatus | None, Job | None]:
+    """For a search that found entries: when one the owner chose for exactly this headword is
+    still unwritten (*absorbing* the adjective, found only as a form of *absorb*), AI writes
+    it after the response, as for a missed search (the same quota, claim and cool-down). The
+    answer is `generating` with its key; otherwise nothing, since the student has results."""
+    q = query.norm_en
+    if not query.wants_en or not q or len(q.split()) > MAX_WORDS["en"]:
+        return None, None
+    row = (await conn.execute(UNWRITTEN, {"q": q})).first()
+    if row is None:
+        return None, None
+    status, job = await _start(conn, principal, query, gateway, "en", row.key)
+    if status.status != "generating":
+        return None, None  # AI is off, failed a moment ago, or the student's searches ran out
+    return ProvisionalStatus(status="generating", entry_key=row.key,
+                             retry_after_ms=RETRY_AFTER_MS), job  # fmt: skip
 
 
 async def _start(
@@ -406,9 +445,28 @@ async def _targets(conn: AsyncConnection, lemmas: list[str], key: str | None) ->
     return [Target(*row) for row in rows]
 
 
-def _choose(targets: list[Target]) -> Resolution | None:
-    """The best of the entries a search may stand for: one shown already, then an approved one
+def _choose(targets: list[Target], lemmas: list[str], key: str | None = None) -> Resolution | None:
+    """The entry a search stands for. The closest match decides first: the key a translation
+    named, then the headword exactly as searched, then its other dictionary forms in the order
+    headwords() gives them (*absorbing* before *absorb*, *the last straw* before *last
+    straw*). Within the closest match the owner chose: one shown already, then an approved one
     nobody has written, then one the factory is on. None when the owner chose none of them."""
+
+    def closeness(target: Target) -> int:
+        if key is not None and target.key == key:
+            return 0
+        found = target.lemma_norm in lemmas
+        return 1 + (lemmas.index(target.lemma_norm) if found else len(lemmas))
+
+    ordered = sorted(targets, key=closeness)  # stable: priority still orders each group
+    for _, group in groupby(ordered, key=closeness):
+        found = _best(list(group))
+        if found is not None:
+            return found
+    return None
+
+
+def _best(targets: list[Target]) -> Resolution | None:
     shown = next((target for target in targets if target.shown), None)
     if shown is not None:
         return Resolution("shown", shown.key)
@@ -486,7 +544,7 @@ def _spanish(conn: psycopg.Connection, job: Job, gateway: Gateway) -> None:
     choices = _choices(translation.value)
     for headword, key in choices:
         lemmas = word_requests.headwords(norm(headword.lemma))
-        found = _choose(_targets_sync(conn, lemmas, key))
+        found = _choose(_targets_sync(conn, lemmas, key), lemmas, key)
         if found is None:
             continue
         assert found.key is not None
@@ -671,8 +729,8 @@ def _spelled_right(conn: psycopg.Connection, query: str) -> bool:
 
 def _target(conn: psycopg.Connection, key: str, *, lock: bool = False) -> Target | None:
     query = (
-        f"select key, lemma, pos, kind::text, status::text, approved_at is not null, {live()}"
-        " from entries e where key = %s and status <> 'retired'"
+        f"select key, lemma, pos, kind::text, status::text, approved_at is not null, {live()},"
+        " lemma_norm from entries e where key = %s and status <> 'retired'"
     )
     row = conn.execute(query + " for update" if lock else query, (key,)).fetchone()
     return Target(*row) if row else None

@@ -636,7 +636,8 @@ Caddy accepts `bbb` traffic only from the BBB server's IP. Factory routes are to
 - `matched.via` is `exact`, `form` or `equivalent`. `equivalent` is the sense's first equivalent in the student's variety.
 - `did_you_mean` (trigram and phonetic matches) is filled only when no group matched.
 - Inflected input such as *me di cuenta* needs `l1_forms` (§10.2), which publishing doesn't generate yet; until it does, such queries reach these senses through `did_you_mean`.
-- `provisional` is null unless nothing matched. Then it says what happens about the missing word (§6.5) [LK-10], for example `{"status": "generating", "entry_key": null, "retry_after_ms": 1500, "headword": null}`. A search in Spanish gets the same object: the dictionary finds the English word it means.
+- `provisional` says what happens about the missing word when nothing matched (§6.5) [LK-10], for example `{"status": "generating", "entry_key": null, "retry_after_ms": 1500, "headword": null}`. A search in Spanish gets the same object: the dictionary finds the English word it means.
+- **When something matched,** `provisional` is null, unless the owner chose an entry for exactly this headword that nobody has written yet. *absorbing* matches the verb *absorb* through its form, while the adjective *absorbing* waits in the queue. Then it's `{"status": "generating", "entry_key": "en:absorbing:adj", …}`: AI is writing that entry, and searching again shows it first, as the exact match.
 
 | `status` | Meaning | What the plugin does |
 |---|---|---|
@@ -888,12 +889,15 @@ When an entry comes back for repair, `existing_keys` and `repair` carry the publ
 
 **The lookup decides with SQL only** and answers at once (`ai/provisional.py`, `resolve()`):
 1. **The gate:** at most 10 words (8 in Spanish), each known to the reference data in the search's language (`ref_freq` Zipf ≥ 1.0, `ref_forms`, or English Wiktionary). Anything else is `invalid`. A blocked word passes only when the owner chose it (*kill*, an A1 verb); nobody can request one.
-2. **The entries it may stand for:** the search and its dictionary forms (*geese* → *goose*, *gave up* → *give up*, lemminflect), with or without a leading article (*last straw* ↔ *the last straw*), matched against `entries.lemma_norm`. The best one decides:
-   - **shown already** under another form: `ready`, with its key;
-   - **approved, and nobody has written it** (`candidate`, `queued`): `generating`, and one AI job writes it after the response;
-   - **approved, and the factory is on it:** `queued`, with its key;
-   - **none approved:** the request check (§6.7) answers `requestable` or `requested` with the headword, or `invalid`.
-3. **The quota** counts each student's searches that reached AI over the last 24 hours (distinct `ref_key`s of successful calls), 30 by default (`AI_SEARCHES_PER_DAY`, or the console), so a Spanish search that takes two calls counts once.
+2. **The entries it may stand for:** the search and its dictionary forms (*geese* → *goose*, *gave up* → *give up*, lemminflect), with or without a leading article (*last straw* ↔ *the last straw*), matched against `entries.lemma_norm`.
+   - **The closest match decides first:** the headword exactly as searched, then its other forms in that order. *absorbing* is a form of the verb *absorb* and an adjective of its own, and a search for it stands for the adjective, whatever their places in the queue. Before 2026-10-21 queue priority decided, so AI wrote *absorb* for a student who searched *absorbing*. About 1,840 approved headwords are also forms of another entry (*affected*, *loaded*, *amazing*, *worse*).
+   - **Within the closest match the owner chose, the best one decides:**
+     - **shown already** under another form: `ready`, with its key;
+     - **approved, and nobody has written it** (`candidate`, `queued`): `generating`, and one AI job writes it after the response;
+     - **approved, and the factory is on it:** `queued`, with its key.
+   - **None approved:** the request check (§6.7) answers `requestable` or `requested` with the headword, or `invalid`.
+3. **A search that found entries can still start one job.** When the owner chose an entry for exactly the search that nobody has written yet, AI writes it after the response, with the same quota, claim and cool-down (`also_writing`). The answer keeps its results and adds `generating` with that entry's key. Without this, *absorbing* found the verb *absorb* through its form for good, and the adjective waited for the factory at the end of the queue; *light* the noun hid *light* the adjective the same way (4,972 headwords have several parts of speech).
+4. **The quota** counts each student's searches that reached AI over the last 24 hours (distinct `ref_key`s of successful calls), 30 by default (`AI_SEARCHES_PER_DAY`, or the console), so a Spanish search that takes two calls counts once.
 
 **Generating** (`provisional_entry.v3`):
 - **The headword comes from the seed, never from the model.** The model is told the lemma, part of speech and kind, and writes only the senses: 1–2, one example each, with the es-419 layer. A model can't drift to another word, correct a typo into a headword, or invent one.

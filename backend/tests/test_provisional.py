@@ -668,3 +668,66 @@ def test_a_search_with_a_leading_article_finds_the_headword(
             "headword": None,
         }  # fmt: skip
     assert model.calls == 1
+
+
+def adjective(word: str, example: str, definition: str) -> dict[str, Any]:
+    """A short draft for an adjective, with KETTLE's Spanish, which the test lexicon knows."""
+    draft = copy.deepcopy(KETTLE)
+    draft["senses"][0].update(cefr="B2", definition=definition, short_gloss=definition,
+                              example=example)  # fmt: skip
+    return draft
+
+
+def test_a_search_for_a_headword_finds_it_not_the_word_it_inflects(
+    migrated_database_url, anyio_backend_options
+):
+    # absorbing is a form of the verb absorb and an adjective of its own; the verb comes
+    # first in the queue.
+    kettle_world()
+    with connect() as conn:
+        for word, zipf in (("absorb", 3.8), ("absorbing", 3.5), ("story", 5.0)):
+            conn.execute("insert into ref_freq (dataset_id, language, word, zipf)"
+                         " values ('t-freq', 'en', %s, %s)", (word, zipf))  # fmt: skip
+        seed(conn, "en:absorb:v", "absorb", "verb", priority=41381)
+        seed(conn, "en:absorbing:adj", "absorbing", "adjective", priority=1350)
+    model = Model(
+        adjective(
+            "absorbing", "It was an absorbing story about a family in Lima.", "very interesting"
+        )
+    )
+    with client(anyio_backend_options, Gateway([model], 5.0)) as api:
+        assert lookup(api, "absorbing")["provisional"]["status"] == "generating"
+        [item] = lookup(api, "absorbing")["groups"][0]["items"]
+        assert item["entry_key"] == "en:absorbing:adj"
+    assert model.questions[0].startswith("Headword: absorbing\nPart of speech: adjective")
+    assert row("select status::text from entries where key = 'en:absorb:v'") == ("queued",)
+
+
+def test_a_form_of_a_shown_word_still_gets_its_own_unwritten_entry(
+    migrated_database_url, anyio_backend_options
+):
+    # go is shown, and going is one of its forms; going the adjective (the going rate) waits.
+    from factory_docs import GO_DOC
+    from smart_dictionary.content.publish import publish
+    from smart_dictionary.core.entrydoc import EntryDoc
+
+    kettle_world()
+    with connect() as conn:
+        publish(conn, EntryDoc.model_validate(GO_DOC), produced_by={"source": "test"})
+        seed(conn, "en:going:adj", "going", "adjective", priority=1300)
+    model = Model(adjective("going", "What is the going rate for a taxi?", "usual at the moment"))
+    with client(anyio_backend_options, Gateway([], 5.0)) as off:
+        found = lookup(off, "going")  # AI off: the verb, and nothing more
+        assert [i["entry_key"] for i in found["groups"][0]["items"]] == ["en:go:v"]
+        assert found["provisional"] is None
+    with client(anyio_backend_options, Gateway([model], 5.0)) as api:
+        first = lookup(api, "going")
+        assert [i["entry_key"] for i in first["groups"][0]["items"]] == ["en:go:v"]
+        assert (first["provisional"]["status"], first["provisional"]["entry_key"]) == (
+            "generating", "en:going:adj",
+        )  # fmt: skip
+        # Written after the response: the exact headword now comes first.
+        again = lookup(api, "going")
+        assert [i["entry_key"] for i in again["groups"][0]["items"]] == ["en:going:adj", "en:go:v"]
+        assert again["provisional"] is None
+    assert model.calls == 1
