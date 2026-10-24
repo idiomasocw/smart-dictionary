@@ -10,12 +10,18 @@ without changing anything. The header says which shape it is:
   variants, with its `regions` (`UK`), so the factory lists it and search finds the entry.
   Only seeds still waiting are touched; `seeds queue` then queues the accepted ones, and
   links any whose word has an entry already.
-- **Entries** (`key, decision, pos, kind, confidence, reason`): an entry `keep`s its part of
-  speech and kind, `change`s them, or is `retire`d. Only unwritten entries change here: a
-  change retires the key (keys are never reused) and queues the right one in its place, with
-  its seed, priority and approval, and the searches that pointed at it. A written entry isn't
-  touched; the decision becomes an audit finding (design §6.6), for the owner to apply in the
-  console.
+- **Entries** (`key, decision, pos, kind, confidence, reason`, and optionally `pattern_of,
+  pattern`): an entry `keep`s its part of speech and kind, `change`s them, or is `retire`d.
+  - **A change of function alone** (an idiom or a phrase: *as long as* becomes a conjunction)
+    happens in place, written or not: the key holds the kind, not the function.
+  - **Any other change, and a retirement,** applies to unwritten entries only. A change
+    retires the key (keys are never reused) and queues the right one in its place, with its
+    seed, priority and approval, and the searches that pointed at it. A written entry isn't
+    touched; the decision becomes an audit finding (design §6.6), for the owner to apply in
+    the console.
+  - **A retired longer form can hand its pattern to the entry that keeps the meaning**
+    (`pattern_of`, `pattern`): *look back on* retires, and *look back* takes "look back (on
+    sth)", so the factory writes it.
 
 Every row is all or nothing, and each row's outcome is reported.
 """
@@ -29,14 +35,18 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from smart_dictionary.admin.curation import add_pattern, set_pos
 from smart_dictionary.content.word_requests import TWIN
-from smart_dictionary.core.entrydoc import KIND_POS, POS, EnglishRegion, Kind
+from smart_dictionary.core import headwords
+from smart_dictionary.core.entrydoc import POS, EnglishRegion, Kind, valid_pos
 from smart_dictionary.core.ids import new_id
 from smart_dictionary.core.keys import entry_key
+from smart_dictionary.core.text import norm
 
 SEED_COLUMNS = ["lemma", "pos", "kind", "decision", "confidence", "reason"]
 VARIANT_COLUMNS = ["variant_of", "regions"]
 ENTRY_COLUMNS = ["key", "decision", "pos", "kind", "confidence", "reason"]
+PATTERN_COLUMNS = ["pattern_of", "pattern"]
 CONFIDENCES = ("high", "medium", "low")
 
 Shape = Literal["seeds", "entries"]
@@ -62,7 +72,7 @@ def read(path: Path) -> tuple[Shape, list[dict[str, str]]]:
     if header in (SEED_COLUMNS, SEED_COLUMNS + VARIANT_COLUMNS):
         shape: Shape = "seeds"
         allowed = ("accept", "reject")
-    elif header == ENTRY_COLUMNS:
+    elif header in (ENTRY_COLUMNS, ENTRY_COLUMNS + PATTERN_COLUMNS):
         shape = "entries"
         allowed = ("keep", "change", "retire")
     else:
@@ -86,11 +96,11 @@ def read(path: Path) -> tuple[Shape, list[dict[str, str]]]:
 
 
 def valid(pos: str, kind: str) -> bool:
-    """The part of speech and kind can make an entry: a phrasal verb is a verb, an idiom or a
-    phrase is a phrase, and a word is anything but a phrase."""
+    """The part of speech and kind can make an entry: a phrasal verb is a verb, a word anything
+    but a phrase, and an idiom or a phrase its function, or "phrase"."""
     if pos not in get_args(POS) or kind not in get_args(Kind):
         return False
-    return pos != "phrase" if kind == "word" else pos == KIND_POS[kind]
+    return valid_pos(pos, kind)
 
 
 def apply(
@@ -114,13 +124,13 @@ def apply(
 
 def waiting(conn: psycopg.Connection, shape: Shape, rows: list[dict[str, str]]) -> list[str]:
     """What still waits for a decision that the file doesn't cover: seeds with no part of
-    speech or kind, or multiword verbs stored as plain words."""
+    speech or kind, or, for a file about them, multiword verbs stored as plain words."""
     if shape == "seeds":
         found = conn.execute(
             "select lemma from seed_candidates where entry_id is null"
             " and coalesce(decision, 'accept') = 'accept'"
             " and (pos is null or kind is null or case kind when 'word' then pos = 'phrase'"
-            "      when 'phrasal_verb' then pos <> 'verb' else pos <> 'phrase' end)"
+            "      when 'phrasal_verb' then pos <> 'verb' else false end)"
             " order by lemma_norm"
         ).fetchall()
         covered = {row["lemma"] for row in rows}
@@ -130,6 +140,8 @@ def waiting(conn: psycopg.Connection, shape: Shape, rows: list[dict[str, str]]) 
             " and kind = 'word' and pos = 'verb' and status <> 'retired' order by key"
         ).fetchall()
         covered = {row["key"] for row in rows}
+        if len(covered & {row[0] for row in found}) * 2 < len(covered):
+            return []  # mostly another subject (the categories of 2026-10-24)
     return [row[0] for row in found if row[0] not in covered]
 
 
@@ -142,7 +154,7 @@ def _seed(conn: psycopg.Connection, row: dict[str, str], label: str) -> Outcome:
         "select id from seed_candidates where lemma = %s and entry_id is null"
         " and coalesce(decision, 'accept') = 'accept'"
         " and (pos is null or kind is null or case kind when 'word' then pos = 'phrase'"
-        "      when 'phrasal_verb' then pos <> 'verb' else pos <> 'phrase' end)"
+        "      when 'phrasal_verb' then pos <> 'verb' else false end)"
         " order by homograph",
         (lemma,),
     ).fetchall()
@@ -158,7 +170,9 @@ def _seed(conn: psycopg.Connection, row: dict[str, str], label: str) -> Outcome:
         if row.get("variant_of"):
             return _variant(conn, lemma, row["variant_of"], row.get("regions", "").split())
         return Outcome(lemma, "rejected", True)
-    pos, kind = row["pos"], row["kind"]
+    pos = row["pos"]
+    headword, pattern = headwords.mended(lemma, pos)
+    kind = headwords.mended_kind(headword, row["kind"])
     try:
         with conn.transaction():
             conn.execute(
@@ -166,13 +180,30 @@ def _seed(conn: psycopg.Connection, row: dict[str, str], label: str) -> Outcome:
                 " reason = %s, flags = array_append(flags, %s), updated_at = now() where id = %s",
                 (pos, kind, reason, f"part of speech and kind from {label}", seeds[0][0]),
             )
+            if headword != lemma:
+                conn.execute(
+                    "update seed_candidates set lemma = %s, lemma_norm = %s,"
+                    " patterns = case when %s::text is null or %s = any(patterns) then patterns"
+                    " else array_append(patterns, %s) end where id = %s",
+                    (headword, norm(headword), pattern, pattern, pattern, seeds[0][0]),
+                )
     except psycopg.errors.UniqueViolation:
         conn.execute(
             "update seed_candidates set decision = 'merge', reason = %s, updated_at = now()"
             " where id = %s",
-            (f"another seed is {lemma} as {pos}/{kind}; {reason}"[:500], seeds[0][0]),
+            (f"another seed is {headword} as {pos}/{kind}; {reason}"[:500], seeds[0][0]),
         )
-        return Outcome(lemma, f"merged: another seed is {lemma} as {pos}/{kind}", True)
+        if pattern:  # the seed that stays takes the pattern this one carried
+            conn.execute(
+                "update seed_candidates set patterns = array_append(patterns, %s)"
+                " where lemma_norm = %s and pos = %s and kind = %s::entry_kind"
+                " and homograph = 1 and not (%s = any(patterns))",
+                (pattern, norm(headword), pos, kind, pattern),
+            )
+        return Outcome(lemma, f"merged: another seed is {headword} as {pos}/{kind}", True)
+    if headword != lemma:
+        return Outcome(lemma, f"accepted as {pos}/{kind}, headword {headword!r}"
+                       + (f" with the pattern {pattern!r}" if pattern else ""), True)  # fmt: skip
     return Outcome(lemma, f"accepted as {pos}/{kind}", True)
 
 
@@ -218,6 +249,13 @@ def _entry(conn: psycopg.Connection, row: dict[str, str], label: str) -> Outcome
         return Outcome(key, "skipped: retired already", False)
     if entry["status"] == "generating":
         return Outcome(key, "skipped: the routine is writing it; run the file again later", False)
+    pos, kind = row["pos"], row["kind"]
+    new_key = entry_key("en", entry["lemma"], pos, kind) if row["decision"] == "change" else None
+    if new_key == key:
+        if pos == entry["pos"]:
+            return Outcome(key, "kept: that's its own part of speech and kind", False)
+        set_pos(conn, key, pos, by=label, reason=row["reason"])
+        return Outcome(key, f"function: {pos}", True)
     if entry["written"]:
         return _finding(conn, entry, row, label)
     reason = _reason(row, label)
@@ -228,12 +266,11 @@ def _entry(conn: psycopg.Connection, row: dict[str, str], label: str) -> Outcome
             " where entry_id = %s",
             (reason, entry["id"]),
         )
+        if row.get("pattern_of"):
+            return _pattern(conn, key, row["pattern_of"], row.get("pattern") or entry["lemma"])
         return Outcome(key, "retired", True)
 
-    pos, kind = row["pos"], row["kind"]
-    new_key = entry_key("en", entry["lemma"], pos, kind)
-    if new_key == key:
-        return Outcome(key, "kept: that's its own part of speech and kind", False)
+    assert new_key is not None
     target = conn.execute(
         "select id, status::text from entries where key = %s for update", (new_key,)
     ).fetchone()
@@ -268,6 +305,17 @@ def _entry(conn: psycopg.Connection, row: dict[str, str], label: str) -> Outcome
         (target_id, reason, entry["id"]),
     )
     return Outcome(key, action, True)
+
+
+def _pattern(conn: psycopg.Connection, key: str, of: str, pattern: str) -> Outcome:
+    """Give the entry that keeps the meaning the retired form as a pattern, through its seed:
+    the factory writes it the next time it writes the entry."""
+    try:
+        added = add_pattern(conn, of, pattern, retired=key)
+    except LookupError:
+        return Outcome(key, f"retired; {of} isn't an entry to take the pattern", True)
+    return Outcome(key, f"retired: a pattern of {of} now" + ("" if added else " (listed already)"),
+                   True)  # fmt: skip
 
 
 class _Twin(Exception):
@@ -330,3 +378,52 @@ def _finding(
 
 def _reason(row: dict[str, str], label: str) -> str:
     return f"{row['reason']} ({row['confidence']} confidence; {label})"[:500]
+
+
+# Functions from Wiktionary ------------------------------------------------------------------
+
+# The word classes an idiom or a phrase can take from Wiktionary, which uses the same names.
+FUNCTIONS = ("noun", "verb", "adjective", "adverb", "pronoun", "determiner", "preposition",
+             "conjunction", "interjection", "numeral")  # fmt: skip
+# Idioms and phrases still without a function, each with the one Wiktionary gives, if one.
+ONE_FUNCTION = """
+select e.key, f.found[1] from entries e
+cross join lateral (
+  select array(select distinct k.pos from ref_wiktionary k
+               where k.word_norm = e.lemma_norm and k.pos = any(%(functions)s)) as found) f
+where e.language = 'en' and e.status <> 'retired' and e.kind in ('idiom', 'phrase')
+  and e.pos = 'phrase' and cardinality(f.found) = 1
+order by e.key
+"""
+SEED_FUNCTIONS = """
+update seed_candidates c set pos = f.found[1], updated_at = now()
+from (select c2.id, array(select distinct k.pos from ref_wiktionary k
+                          where k.word_norm = c2.lemma_norm and k.pos = any(%(functions)s)) as found
+      from seed_candidates c2
+      where c2.entry_id is null and c2.kind in ('idiom', 'phrase') and c2.pos = 'phrase') f
+where c.id = f.id and cardinality(f.found) = 1
+  and not exists (select from seed_candidates o where o.lemma_norm = c.lemma_norm
+                  and o.pos = f.found[1] and o.kind = c.kind and o.homograph = c.homograph)
+returning c.lemma
+"""
+
+
+def functions(conn: psycopg.Connection, *, label: str) -> tuple[list[Outcome], int, int]:
+    """Give each idiom and phrase still marked `phrase` the one word class Wiktionary records
+    for it (policy of 2026-10-24): in place, written or not, and its seed too. Returns what
+    changed, how many seeds waiting to be queued changed, and how many idioms and phrases
+    still have none (several functions, or none known): those need a curation file."""
+    outcomes = []
+    for key, pos in conn.execute(ONE_FUNCTION, {"functions": list(FUNCTIONS)}).fetchall():
+        try:
+            with conn.transaction():
+                set_pos(conn, key, pos, by=label, reason="the one function Wiktionary gives it")
+            outcomes.append(Outcome(key, f"function: {pos}", True))
+        except Exception as error:  # a Conflict: it's being written; the next run takes it
+            outcomes.append(Outcome(key, f"skipped: {error}", False))
+    seeds = len(conn.execute(SEED_FUNCTIONS, {"functions": list(FUNCTIONS)}).fetchall())
+    left = conn.execute(
+        "select count(*) from entries where language = 'en' and status <> 'retired'"
+        " and kind in ('idiom', 'phrase') and pos = 'phrase'"
+    ).fetchone()
+    return outcomes, seeds, left[0] if left else 0

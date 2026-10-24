@@ -11,6 +11,8 @@ that calls it.
 - **Publish the draft:** the owner disagrees with the factory's reviewer and publishes the
   draft it turned down. The owner overrules the review, never the server's checks: a draft
   with an error still can't publish.
+- **Set an idiom's or a phrase's function** (`set_pos`): its key holds its kind, not its
+  function, so the part of speech changes in place, in the written document too.
 - **Send to repair with the owner's notes:** the owner's own critique, for a published entry,
   a draft, or a word nobody has written yet. The notes start with "owner:" and win over a
   reviewer's or an audit's, in the factory and in the audit.
@@ -26,7 +28,8 @@ from smart_dictionary.admin.browse import DRAFT
 from smart_dictionary.content import word_requests
 from smart_dictionary.content.publish import publish
 from smart_dictionary.content.word_requests import Conflict
-from smart_dictionary.core.entrydoc import KIND_POS, EntryDoc
+from smart_dictionary.core import headwords
+from smart_dictionary.core.entrydoc import KIND_POS, EntryDoc, valid_pos
 from smart_dictionary.core.ids import new_id
 from smart_dictionary.core.keys import entry_key
 from smart_dictionary.core.text import norm
@@ -51,8 +54,12 @@ def add(
     note: str | None,
     tenant: str,
 ) -> word_requests.Approved:
-    """ValueError: the parts can't make an entry; Conflict: it exists, or a twin does."""
+    """ValueError: the parts can't make an entry, or the headword breaks the rules (a slot at
+    its end, a slot spelled another way); Conflict: it exists, or a twin does."""
     pos = KIND_POS.get(kind, pos)
+    broken = headwords.problems(lemma, pos)
+    if broken:
+        raise ValueError("; ".join(broken))
     key = entry_key("en", lemma, pos, kind)
     existing = conn.execute("select status::text from entries where key = %s", (key,)).fetchone()
     if existing is not None:
@@ -180,6 +187,94 @@ def send_to_repair(
         (row["id"],),
     )
     return row["status"]
+
+
+def set_pos(conn: psycopg.Connection, key: str, pos: str, *, by: str, reason: str) -> str:
+    """Give an idiom or a phrase its function (as long as: conjunction) in place: its key holds
+    its kind, not its part of speech, so nothing else moves. A written document gets it too,
+    as a revision: the server owns that fact (STYLE §2). Its seed follows. Returns the part of
+    speech it had. LookupError: no such entry; Conflict: retired, being written, or not an
+    idiom or a phrase; ValueError: not a part of speech for its kind."""
+    row = conn.execute(
+        "select id, pos, kind::text, status::text, doc,"
+        " published_at is not null and doc is not null from entries where key = %s for update",
+        (key,),
+    ).fetchone()
+    if row is None:
+        raise LookupError(key)
+    entry_id, before, kind, status, doc, written = row
+    if status in ("retired", "generating"):
+        raise Conflict(f"it's {status}")
+    if kind not in ("idiom", "phrase"):
+        raise Conflict("only an idiom's or a phrase's part of speech changes in place")
+    if not valid_pos(pos, kind):
+        raise ValueError(f"{pos} can't go with {kind}")
+    if pos == before:
+        return before
+    conn.execute("update entries set pos = %s, updated_at = now() where id = %s", (pos, entry_id))
+    if written:
+        changed = {**doc, "pos": pos}
+        conn.execute(
+            "update entries set doc = %s, content_version = content_version + 1 where id = %s",
+            (Jsonb(changed), entry_id),
+        )
+        conn.execute(
+            "insert into entry_revisions (id, entry_id, doc, produced_by, qa, outcome)"
+            " values (%s, %s, %s, %s, %s, 'published')",
+            (new_id(), entry_id, Jsonb(changed), Jsonb({"source": "policy", "by": by}),
+             Jsonb({"changed": {"pos": [before, pos]}, "reason": reason})),
+        )  # fmt: skip
+    try:
+        with conn.transaction():
+            conn.execute("update seed_candidates set pos = %s where entry_id = %s", (pos, entry_id))
+    except psycopg.errors.UniqueViolation:
+        pass  # another seed already names it so: the entry is what counts
+    return before
+
+
+def add_pattern(
+    conn: psycopg.Connection, key: str, pattern: str, *, retired: str | None = None
+) -> bool:
+    """Give an entry a pattern (look back on sth) the factory writes the next time it writes
+    the entry. Patterns travel on seeds, so an entry without one (the owner or a student asked
+    for it) gets a seed for it. `retired`: the retired entry the pattern stands for, whose
+    searches now find this one. Returns False when it had the pattern already. LookupError: no
+    such entry."""
+    if retired is not None:
+        conn.execute(
+            "update entries set pattern_of = %s where key = %s and status = 'retired'",
+            (key, retired),
+        )
+    row = conn.execute(
+        "select id, lemma, lemma_norm, pos, kind::text, homograph from entries where key = %s",
+        (key,),
+    ).fetchone()
+    if row is None:
+        raise LookupError(key)
+    entry_id, lemma, lemma_norm, pos, kind, homograph = row
+    seeds = conn.execute(
+        "select %s = any(patterns) from seed_candidates where entry_id = %s", (pattern, entry_id)
+    ).fetchall()
+    if seeds:
+        conn.execute(
+            "update seed_candidates set patterns = array_append(patterns, %s), updated_at = now()"
+            " where entry_id = %s and not (%s = any(patterns))",
+            (pattern, entry_id, pattern),
+        )
+        return not all(had for (had,) in seeds)
+    added = conn.execute(
+        "insert into seed_candidates (lemma, lemma_norm, pos, kind, homograph, sources,"
+        " decision, reason, entry_id, patterns) values (%s, %s, %s, %s::entry_kind, %s,"
+        " array['owner:pattern'], 'accept', 'carries a pattern', %s, array[%s])"
+        " on conflict on constraint seed_candidates_identity do update"
+        " set entry_id = coalesce(seed_candidates.entry_id, excluded.entry_id),"
+        " patterns = case when %s = any(seed_candidates.patterns) then seed_candidates.patterns"
+        " else array_append(seed_candidates.patterns, %s) end, updated_at = now()"
+        " where seed_candidates.entry_id is null or seed_candidates.entry_id = excluded.entry_id"
+        " returning 1",
+        (lemma, lemma_norm, pos, kind, homograph, entry_id, pattern, pattern, pattern),
+    ).fetchone()
+    return added is not None
 
 
 def _locked(conn: psycopg.Connection, key: str) -> dict[str, Any]:

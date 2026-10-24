@@ -360,7 +360,7 @@ def test_a_long_idiom_can_be_requested(migrated_database_url, anyio_backend_opti
         # Longer than any seeded expression: not a headword.
         assert lookup(client, " ".join(["nail"] * 11))["provisional"]["status"] == "invalid"
     assert row("select pos, kind::text, origin from word_requests") == (
-        "phrase", "idiom", "student",
+        "verb", "idiom", "student",  # an idiom that works as a verb
     )  # fmt: skip
 
 

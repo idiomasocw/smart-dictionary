@@ -219,6 +219,28 @@ def _seeds_curate(path: Path | None, dry_run: bool) -> None:
         print("Next: uv run smart-dictionary seeds queue --dry-run, then without --dry-run.")
 
 
+def _seeds_functions(dry_run: bool) -> None:
+    """Give idioms and phrases the one function Wiktionary records (seeds.curate.functions)."""
+    from smart_dictionary.db.sync import connect
+    from smart_dictionary.seeds import curate
+
+    with connect() as conn:
+        outcomes, seeds, left = curate.functions(conn, label="wiktionary functions")
+        if dry_run:
+            conn.rollback()
+        else:
+            conn.commit()
+    changed = [o for o in outcomes if o.changed]
+    for outcome in outcomes[:20]:
+        print(f"{outcome.target}: {outcome.action}")
+    if len(outcomes) > 20:
+        print(f"... and {len(outcomes) - 20} more")
+    print(f"{len(changed)} idioms and phrases {'would get' if dry_run else 'got'} their function,"
+          f" and {seeds} waiting seeds; {left} still have none, for a curation file")  # fmt: skip
+    if dry_run:
+        print("Dry run: nothing was changed.")
+
+
 def _factory(action: str, name: str | None, runs: int) -> None:
     from smart_dictionary.db.sync import connect
     from smart_dictionary.factory import progress
@@ -330,7 +352,7 @@ def main(argv: list[str] | None = None) -> None:
     fixtures.add_argument("action", choices=["load"])
 
     seeds = commands.add_parser("seeds", help="seed candidates from the owner's and open lists")
-    seeds.add_argument("action", choices=["import", "export", "queue", "curate"])
+    seeds.add_argument("action", choices=["import", "export", "queue", "curate", "functions"])
     seeds.add_argument(
         "--file",
         type=Path,
@@ -347,7 +369,7 @@ def main(argv: list[str] | None = None) -> None:
     )  # fmt: skip
     seeds.add_argument("--limit", type=int, help="queue: at most this many, by priority")
     seeds.add_argument(
-        "--dry-run", action="store_true", help="queue and curate: show, change nothing"
+        "--dry-run", action="store_true", help="queue, curate and functions: show, change nothing"
     )
 
     requests = commands.add_parser("requests", help="word requests (design §6.7)")
@@ -395,6 +417,8 @@ def main(argv: list[str] | None = None) -> None:
         _seeds_queue(args.lemma, args.level, args.limit, args.dry_run)
     elif args.command == "seeds" and args.action == "curate":
         _seeds_curate(args.file, args.dry_run)
+    elif args.command == "seeds" and args.action == "functions":
+        _seeds_functions(args.dry_run)
     elif args.command == "seeds":
         _seeds(args.action, args.file, args.out)
     elif args.command == "requests":

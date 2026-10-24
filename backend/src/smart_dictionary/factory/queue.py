@@ -43,7 +43,7 @@ from seed_candidates c
 where c.pos is not null and c.kind is not null and c.entry_id is null
   and coalesce(c.decision, 'accept') = 'accept'
   and case c.kind when 'word' then c.pos <> 'phrase' when 'phrasal_verb' then c.pos = 'verb'
-                  else c.pos = 'phrase' end
+                  else true end
   and (%(lemmas)s::text[] is null or c.lemma_norm = any(%(lemmas)s))
   and (%(levels)s::text[] is null or c.levels && %(levels)s)
   and not exists (

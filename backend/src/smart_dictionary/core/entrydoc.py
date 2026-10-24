@@ -34,8 +34,19 @@ RelationType = Literal["synonym", "antonym", "family", "confusable", "see_also"]
 # (keep one's word, kick oneself); "sb's" is someone else's (pull sb's leg).
 Slot = Literal["sb", "sth", "sb/sth", "sb's", "one's", "oneself", "somewhere", "doing sth"]
 
-# Multiword kinds and the part of speech each must carry.
-KIND_POS: dict[str, str] = {"phrasal_verb": "verb", "idiom": "phrase", "phrase": "phrase"}
+# The kind whose part of speech is fixed: a phrasal verb is a verb. An idiom or a phrase takes
+# the word class it works as in a sentence (as long as: conjunction; break the ice: verb), or
+# "phrase" for a whole sentence with no single function (a proverb, a formula). The category
+# and the function together: the policy of 2026-10-24, docs/policies/categories-and-headwords.md.
+KIND_POS: dict[str, str] = {"phrasal_verb": "verb"}
+
+
+def valid_pos(pos: str, kind: str) -> bool:
+    """The part of speech can go with the kind: a word takes any word class, a phrasal verb is
+    a verb, and an idiom or a phrase takes its function, or "phrase"."""
+    if kind == "word":
+        return pos != "phrase"
+    return pos == KIND_POS.get(kind, pos)
 
 
 class _Model(BaseModel):
@@ -197,7 +208,7 @@ def structure_problems(doc: EntryDoc) -> Iterator[str]:
     if doc.kind != "word":
         if doc.pattern is None:
             yield f"{doc.kind} entries need a pattern"
-        if doc.pos != KIND_POS[doc.kind]:
+        if not valid_pos(doc.pos, doc.kind):
             yield f"{doc.kind} entries use pos {KIND_POS[doc.kind]!r}"
 
     if not any(not sense.retired for sense in doc.senses):

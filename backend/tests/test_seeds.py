@@ -101,7 +101,7 @@ def test_owner_rows_get_a_candidate_per_part_of_speech():
     # A regional spelling goes only where it applies: backwards is an adverb.
     assert found[("backward", "adverb")].variants == [Variant("backwards", ("UK",))]
     assert found[("backward", "adjective")].variants == []
-    assert found[("break the ice", "phrase")].kind == "idiom"
+    assert found[("break the ice", "verb")].kind == "idiom"  # its function, from Wiktionary
     # The normalizer's spacing note is recomputed per part of speech; none applies here.
     assert found[("zzyzx", None)].flags == ["no part of speech found"]
 

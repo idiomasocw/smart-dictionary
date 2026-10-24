@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 import psycopg
 from lemminflect import getLemma
 
+from smart_dictionary.core import headwords
 from smart_dictionary.core.text import norm
 from smart_dictionary.seeds.owner import OwnerRow, Variant
 
@@ -24,7 +25,6 @@ CEFR_DATASETS = ("cefrj", "octanove-c1c2")
 # open lists.
 LEVEL_TIERS = {"A1": 1, "A2": 1, "B1": 2, "B2": 2, "C1": 3, "C2": 3}
 OPEN_LIST_TIER = 4
-KIND_POS = {"phrasal_verb": "verb", "idiom": "phrase", "phrase": "phrase"}
 # A Wiktionary part of speech gets a candidate of its own with at least this many senses and
 # this share of the main part of speech's (house: noun and verb, but not adjective).
 MIN_SENSES = 3
@@ -147,6 +147,16 @@ def parts_of_speech(lemma: str, ref: Reference) -> list[str]:
     return found or sorted(ref.forms.get(key, ()))
 
 
+def function_of(lemma: str, kind: str, ref: Reference) -> str:
+    """A multiword item's part of speech: a phrasal verb is a verb; an idiom or a phrase takes
+    the one word class Wiktionary gives it (as long as: conjunction), else "phrase", for the
+    curation run to decide (policy of 2026-10-24)."""
+    if kind == "phrasal_verb":
+        return "verb"
+    found = {row.pos for row in ref.wiki.get(norm(lemma), [])} - {"phrase"}
+    return next(iter(found)) if len(found) == 1 else "phrase"
+
+
 def guess_kind(lemma: str, ref: Reference) -> str | None:
     """An unclassified item's kind, from Wiktionary; None when nothing says."""
     kinds = {row.kind for row in ref.wiki.get(norm(lemma), []) if _same_case(row.word, lemma)}
@@ -179,8 +189,8 @@ def _owner_candidates(row: OwnerRow, ref: Reference) -> list[Candidate]:
     kind = row.kind or guess_kind(row.lemma, ref)
     if row.pos:
         parts = [row.pos]
-    elif kind in KIND_POS:
-        parts = [KIND_POS[kind]]
+    elif kind and kind != "word":
+        parts = [function_of(row.lemma, kind, ref)]
     else:
         parts = parts_of_speech(row.lemma, ref)
     # Spacing pairs are settled per part of speech below, so the normalizer's notes go.
@@ -189,21 +199,33 @@ def _owner_candidates(row: OwnerRow, ref: Reference) -> list[Candidate]:
         flags.append("kind unknown")
     if not parts:
         flags.append("no part of speech found")
-    return [
-        Candidate(
-            lemma=row.lemma,
-            pos=pos,
-            kind=kind,
-            tier=0,
-            sources=[f"owner:{source}" for source in row.sources],
-            levels=set(row.levels),
-            variants=_variants_for(row.variants, pos, ref, several=len(parts) > 1),
-            patterns=list(row.patterns),
-            flags=list(flags),
-            originals=list(row.originals),
-        )
-        for pos in parts or [None]
-    ]
+    return [_mended(Candidate(
+        lemma=row.lemma,
+        pos=pos,
+        kind=kind,
+        tier=0,
+        sources=[f"owner:{source}" for source in row.sources],
+        levels=set(row.levels),
+        variants=_variants_for(row.variants, pos, ref, several=len(parts) > 1),
+        patterns=list(row.patterns),
+        flags=list(flags),
+        originals=list(row.originals),
+    )) for pos in parts or [None]]  # fmt: skip
+
+
+def _mended(candidate: Candidate) -> Candidate:
+    """The headword rules (core/headwords.py): *drop someone* becomes *drop*, with the
+    pattern "drop sb", and a plain verb now that one word is left."""
+    lemma, pattern = headwords.mended(candidate.lemma, candidate.pos)
+    if lemma == candidate.lemma:
+        return candidate
+    candidate.flags.append(f"headword mended from {candidate.lemma!r}")
+    candidate.lemma, candidate.lemma_norm = lemma, norm(lemma)
+    if candidate.kind:
+        candidate.kind = headwords.mended_kind(lemma, candidate.kind)
+    if pattern and pattern not in candidate.patterns:
+        candidate.patterns.append(pattern)
+    return candidate
 
 
 def _variants_for(
@@ -259,7 +281,12 @@ def _open_list_candidates(candidates: list[Candidate], ref: Reference) -> list[C
             lemma = _citation(row.lemma, row.pos, ref, respell)
             tier = LEVEL_TIERS.get(row.level or "", OPEN_LIST_TIER)
             kind = guess_kind(lemma, ref) or "word"
-            pos = KIND_POS.get(kind, row.pos)
+            if kind == "word":
+                pos = row.pos
+            elif kind == "phrasal_verb":
+                pos = "verb"
+            else:
+                pos = row.pos or function_of(lemma, kind, ref)
             for target in matching(lemma, pos) or [add(lemma, pos, kind, tier)]:
                 if row.level:
                     target.levels.add(row.level)
@@ -272,7 +299,8 @@ def _open_list_candidates(candidates: list[Candidate], ref: Reference) -> list[C
             targets = matching(lemma, None)
             if not targets:
                 kind = guess_kind(lemma, ref) or "word"
-                parts = [KIND_POS[kind]] if kind in KIND_POS else parts_of_speech(lemma, ref)
+                parts = [function_of(lemma, kind, ref)] if kind != "word" else parts_of_speech(
+                    lemma, ref)  # fmt: skip
                 targets = [add(lemma, pos, kind, OPEN_LIST_TIER) for pos in parts or [None]]
             for target in targets:
                 _append(target.sources, row.dataset)

@@ -34,8 +34,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from smart_dictionary.content.visibility import live
+from smart_dictionary.core import headwords as headword_rules
 from smart_dictionary.core import tunables
-from smart_dictionary.core.entrydoc import KIND_POS
+from smart_dictionary.core.entrydoc import KIND_POS, valid_pos
 from smart_dictionary.core.ids import new_id
 from smart_dictionary.core.keys import KIND_CODES, POS_CODES, entry_key, parse_key
 from smart_dictionary.core.principal import Principal
@@ -46,10 +47,11 @@ from smart_dictionary.factory.validate import BLOCKED
 
 # Suggestions put the commonest parts of speech first.
 POS_ORDER = ["noun", "verb", "adjective", "adverb", "phrase"]
-# Each key code's part of speech and kind.
+# Each key code's part of speech and kind. An idiom's or a phrase's key doesn't say its
+# function, so "phrase" stands for any.
 CODE_PARTS = {
     **{code: (pos, "word") for pos, code in POS_CODES.items()},
-    **{code: (KIND_POS[kind], kind) for kind, code in KIND_CODES.items()},
+    **{code: (KIND_POS.get(kind, "phrase"), kind) for kind, code in KIND_CODES.items()},
 }
 
 _REQUESTABLE = """
@@ -244,6 +246,11 @@ def approve(
     if request["status"] != "pending":
         raise Conflict(f"it was {request['status']} already")
     pos = KIND_POS.get(kind, pos)
+    if not valid_pos(pos, kind):
+        raise ValueError(f"{pos} can't go with {kind}")
+    broken = headword_rules.problems(lemma, pos)
+    if broken:
+        raise ValueError("; ".join(broken))
     key = entry_key("en", lemma, pos, kind)
     existing = conn.execute(
         "select status::text, published_at is not null from entries where key = %s for update",
@@ -497,7 +504,13 @@ def _clear_pos(
         return pos, kind, "from its seed"
     options = [(option["pos"], option["kind"]) for option in _options(wiktionary)]
     options = [option for option in options if _forms_entry(*option)]
-    hinted = {hint for hint in hints if hint in options}
+    # An idiom's or a phrase's key names its kind, not its function: any function will do.
+    hinted = {
+        option
+        for option in options
+        for hint in hints
+        if option == hint or (hint[1] in ("idiom", "phrase") and option[1] == hint[1])
+    }
     if len(hinted) == 1:
         [(pos, kind)] = hinted
         return pos, kind, "from the link, as Wiktionary has it"
@@ -517,9 +530,7 @@ def _pair(value: str) -> tuple[str, str] | None:
 
 def _forms_entry(pos: str, kind: str) -> bool:
     """The part of speech and kind can make an entry, as the seed queue requires."""
-    if kind == "word":
-        return pos != "phrase"
-    return pos == ("verb" if kind == "phrasal_verb" else "phrase")
+    return valid_pos(pos, kind)
 
 
 def listing(

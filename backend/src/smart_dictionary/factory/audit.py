@@ -13,8 +13,12 @@ decides what it finds.
 - **Two layers.** The server's rules (free, the same answer every time) raise what data can
   show: a CEFR level two or more steps from the CEFR lists', a part of speech the lists or
   Wiktionary give that has no entry, an idiom stored as a plain word, a twin, a headword
-  Wiktionary lacks, a related link to no word. The auditor confirms or dismisses each, and
-  adds what needs judgment: meanings, definitions, examples, Spanish, levels with no list.
+  Wiktionary lacks, a related link to no word, and what breaks the policy of 2026-10-24 on
+  categories and headwords: a headword ending in an object slot or spelling one another way,
+  an idiom or a phrase without its function, and a longer form that may only be a pattern of
+  a shorter entry (*look back on*, *look back*). The auditor confirms or dismisses each, and
+  adds what needs judgment: meanings, definitions, examples, Spanish, levels with no list,
+  and whether a multiword item is a compound word or a phrase.
 - **The auditor proposes, never edits.** Each finding has a type, the key it's about, the
   evidence and a proposed fix. Applying one goes through the paths that exist: a content fix
   sends the entry to repair, where the factory rewrites it with every check and keeps its
@@ -41,8 +45,10 @@ from psycopg.types.json import Jsonb
 from smart_dictionary.admin import curation
 from smart_dictionary.content import related
 from smart_dictionary.content.word_requests import Conflict
-from smart_dictionary.core.entrydoc import CEFR, KIND_POS, POS, Kind
+from smart_dictionary.core import headwords as headword_rules
+from smart_dictionary.core.entrydoc import CEFR, POS, Kind, valid_pos
 from smart_dictionary.core.ids import new_id
+from smart_dictionary.core.keys import entry_key
 from smart_dictionary.core.text import norm
 from smart_dictionary.factory.packs import MAX_HINTS, hint
 from smart_dictionary.factory.validate import _keys
@@ -56,11 +62,18 @@ MAX_FINDINGS = 10
 AUTO_BY = "auto:audit"
 
 FindingType = Literal["cefr", "meaning", "definition", "example", "spanish", "content",
-                      "part_of_speech", "kind", "duplicate", "remove"]  # fmt: skip
+                      "part_of_speech", "kind", "duplicate", "remove", "headword"]  # fmt: skip
 Confidence = Literal["high", "medium", "low"]
 # Findings about the content: applied by sending the entry to repair, so the factory rewrites
 # it. The others change which entries exist, so they always wait for the owner.
 REPAIRS = ("cefr", "meaning", "definition", "example", "spanish", "content")
+# The word classes an idiom or a phrase can work as: *break the ice* (verb), *as long as*
+# (conjunction).
+FUNCTIONS = ("noun", "verb", "adjective", "adverb", "preposition", "conjunction",
+             "interjection", "pronoun", "determiner", "numeral")  # fmt: skip
+# The preposition that can end a longer form of an entry: *look back on*, *comply with*.
+PREPOSITIONS = ("on", "with", "to", "for", "of", "in", "at", "about", "from", "into", "over",
+                "against", "by", "upon")  # fmt: skip
 
 
 class BatchClosed(Exception):
@@ -202,12 +215,20 @@ def packs(conn: psycopg.Connection, entry_ids: list[uuid.UUID]) -> list[dict[str
             " from word_requests r join word_request_links l on l.request_id = r.id"
             " where r.entry_key = any(%s)", ([entry["key"] for entry in entries],)
         ))  # fmt: skip
+        bases = sorted({base for entry in entries if (base := _base(entry["lemma_norm"]))})
+        shorter = _grouped(cursor.execute(
+            "select lemma_norm as word, key, pos from entries where language = 'en'"
+            " and status <> 'retired' and lemma_norm = any(%s) order by priority desc, key",
+            (bases,),
+        ))  # fmt: skip
     dead = _dead_links(conn, [entry for entry in entries if entry["written"]])
     items = []
     for entry in entries:
         word = entry["lemma_norm"]
+        base = _base(word)
         context = _Context(lists.get(word, []), wiktionary.get(word, []), others.get(
-            entry["expression"], []), seeds, known, dead.get(entry["key"], []))  # fmt: skip
+            entry["expression"], []), seeds, known, dead.get(entry["key"], []),
+            shorter.get(base, []) if base else [])  # fmt: skip
         items.append({
             "key": entry["key"],
             "lemma": entry["lemma"],
@@ -247,6 +268,7 @@ class _Context:
     seeds: set[tuple[str, str | None]]
     known: set[str]
     dead: list[str]
+    shorter: list[dict[str, Any]]  # entries that are this one less its last preposition
     found: list[dict[str, Any]] = field(default_factory=list)
 
     def raise_(
@@ -314,9 +336,12 @@ def _rules(entry: dict[str, Any], context: _Context) -> list[dict[str, Any]]:
         kinds = {row["kind"] for row in context.wiktionary}
         if kinds and "word" not in kinds and len(kinds) == 1:
             (kind,) = kinds
+            functions = {row["pos"] for row in context.wiktionary} - {"phrase"}
+            pos = "verb" if kind == "phrasal_verb" else (
+                next(iter(functions)) if len(functions) == 1 else "phrase")  # fmt: skip
             context.raise_(
                 "kind", key, f"Wiktionary has {lemma} only as a {kind.replace('_', ' ')}.",
-                {"fingerprint": f"kind:{key}:{kind}"}, {"pos": KIND_POS[kind], "kind": kind},
+                {"fingerprint": f"kind:{key}:{kind}"}, {"pos": pos, "kind": kind},
             )  # fmt: skip
 
     # A twin: the same expression under another kind, or with or without its article.
@@ -332,6 +357,39 @@ def _rules(entry: dict[str, Any], context: _Context) -> list[dict[str, Any]]:
             "duplicate", key, f"{twin['key']} ({twin['status']}) is the same expression.",
             {"fingerprint": f"duplicate:{pair}", "lemma": word, "pair": pair}, proposed,
         )  # fmt: skip
+
+    # The policy of 2026-10-24: the headword, the category and the function.
+    broken = headword_rules.problems(lemma, entry["pos"])
+    if broken:
+        better, pattern = headword_rules.mended(lemma, entry["pos"])
+        kind = headword_rules.mended_kind(better, entry["kind"])
+        context.raise_(
+            "headword", key, f"The headword {'; '.join(broken)}.",
+            {"fingerprint": f"headword:{key}"},
+            {"lemma": better, **({"pattern": pattern} if pattern else {}),
+             **({"kind": kind} if kind != entry["kind"] else {})},
+        )  # fmt: skip
+    if entry["kind"] in ("idiom", "phrase") and entry["pos"] == "phrase":
+        functions = {row["pos"] for row in context.wiktionary} & set(FUNCTIONS)
+        if len(functions) == 1:
+            (function,) = functions
+            context.raise_(
+                "kind", key, f"It works as a {function}, as Wiktionary has it; its part of"
+                " speech says only 'phrase'.",
+                {"fingerprint": f"kind:{key}:{function}"},
+                {"pos": function, "kind": entry["kind"]},
+            )  # fmt: skip
+    for base in context.shorter:
+        if base["pos"] != entry["pos"]:  # *long for*, a verb, is a pattern of the verb *long*
+            continue
+        pattern = f"{lemma} sth"
+        context.raise_(
+            "duplicate", key, f"It may be {base['key']} with its usual preposition, a pattern"
+            f" ({pattern}) rather than an entry. Keep it only if its meaning is its own.",
+            {"fingerprint": f"duplicate:{key}:{base['key']}", "lemma": word},
+            {"retire": key, "keep": base["key"], "pattern": pattern},
+        )  # fmt: skip
+        break
 
     # A headword Wiktionary lacks: a real word it misses, or one to remove.
     if not context.wiktionary:
@@ -378,6 +436,12 @@ def _dead_links(conn: psycopg.Connection, entries: list[dict[str, Any]]) -> dict
         for key, found_links in links.items()
         if any(found.lemma not in named for found in found_links)
     }
+
+
+def _base(word: str) -> str | None:
+    """A multiword headword less a preposition at its end: *look back on* → *look back*."""
+    words = word.split()
+    return " ".join(words[:-1]) if len(words) > 1 and words[-1] in PREPOSITIONS else None
 
 
 def _listed(row: dict[str, Any]) -> str:
@@ -606,7 +670,7 @@ def _shape(entry: dict[str, Any], kind: str, proposed: Any) -> str | None:
         pos, word_kind = str(proposed.get("pos")), str(proposed.get("kind"))
         if pos not in get_args(POS) or word_kind not in get_args(Kind):
             return "pos and kind must be the entry model's"
-        if pos != KIND_POS.get(word_kind, pos) or (word_kind == "word" and pos == "phrase"):
+        if not valid_pos(pos, word_kind):
             return f"{pos} can't go with {word_kind}"
         if kind == "kind" and (pos, word_kind) == (entry["pos"], entry["kind"]):
             return "that's the entry's own part of speech and kind"
@@ -620,6 +684,12 @@ def _shape(entry: dict[str, Any], kind: str, proposed: Any) -> str | None:
             return "retire and keep must name two entries"
         if entry["key"] not in (retire, keep):
             return "one of the two must be this entry"
+    if kind == "headword":
+        lemma = proposed.get("lemma")
+        if not isinstance(lemma, str) or not lemma.strip() or norm(lemma) == entry["lemma_norm"]:
+            return "lemma must be the better headword"
+        if headword_rules.problems(lemma, entry["pos"]):
+            return "; ".join(headword_rules.problems(lemma, entry["pos"]))
     return None
 
 
@@ -651,7 +721,8 @@ def apply(
     with conn.cursor(row_factory=dict_row) as cursor:
         rows = cursor.execute(
             "select f.id, f.type, f.target_key, f.problem, f.proposed, f.status, f.entry_id,"
-            " e.key as entry_key, e.lemma, e.status::text as entry_status, e.doc,"
+            " e.key as entry_key, e.lemma, e.pos, e.kind::text as kind,"
+            " e.status::text as entry_status, e.doc,"
             " e.published_at is not null and e.doc is not null as written"
             " from audit_findings f join entries e on e.id = f.entry_id"
             " where f.id = any(%s) order by e.key, f.created_at for update of f",
@@ -756,6 +827,13 @@ def _change(
                 curation.add(conn, lemma=proposed["lemma"], pos=proposed["pos"],
                              kind=proposed["kind"], decided_by=decided_by,
                              note=f"audit: {row['problem']}"[:500], tenant=tenant)  # fmt: skip
+            elif (
+                row["type"] == "kind"
+                and entry_key("en", row["lemma"], proposed["pos"], proposed["kind"])
+                == row["entry_key"]
+            ):
+                curation.set_pos(conn, row["entry_key"], proposed["pos"], by=decided_by,
+                                 reason=row["problem"])  # fmt: skip
             elif row["type"] == "kind":
                 curation.retire(conn, row["entry_key"])
                 curation.add(conn, lemma=row["lemma"], pos=proposed["pos"], kind=proposed["kind"],
@@ -765,6 +843,17 @@ def _change(
                 if not proposed.get("retire"):
                     raise Conflict("say which entry to retire first")
                 curation.retire(conn, proposed["retire"])
+                if proposed.get("pattern") and proposed.get("keep"):
+                    curation.add_pattern(conn, proposed["keep"], proposed["pattern"],
+                                         retired=proposed["retire"])  # fmt: skip
+            elif row["type"] == "headword":
+                curation.retire(conn, row["entry_key"])
+                added = curation.add(conn, lemma=proposed["lemma"], pos=row["pos"],
+                                     kind=proposed.get("kind", row["kind"]),
+                                     decided_by=decided_by, tenant=tenant,
+                                     note=f"audit: {row['problem']}"[:500])  # fmt: skip
+                if proposed.get("pattern"):
+                    curation.add_pattern(conn, added.key, proposed["pattern"])
             else:  # remove
                 curation.retire(conn, row["entry_key"])
             _decided(conn, [row["id"]], "applied", decided_by, note)

@@ -227,12 +227,16 @@ select exists (select 1 from ref_wiktionary where word_norm = any(cast(:lemmas a
                and approved_at is not null and lemma_norm = any(cast(:lemmas as text[])))
 """)
 
+# A headword retired as a pattern of another entry (*comply with*, "comply (with sth)") stands
+# for that entry.
 _TARGETS = """
 select e.key, e.lemma, e.pos, e.kind::text, e.status::text, e.approved_at is not null,
        {shown}, e.lemma_norm
 from entries e
 where e.language = 'en' and e.status <> 'retired'
-  and (e.lemma_norm = any({lemmas}) or e.key = {key})
+  and (e.lemma_norm = any({lemmas}) or e.key = {key}
+       or e.key in (select r.pattern_of from entries r where r.pattern_of is not null
+                    and r.status = 'retired' and r.lemma_norm = any({lemmas})))
 order by e.priority desc, e.key
 """
 TARGETS = text(_TARGETS.format(shown=live(), lemmas="cast(:lemmas as text[])", key=":key"))
