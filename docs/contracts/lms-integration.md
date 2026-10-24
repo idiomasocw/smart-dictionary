@@ -142,7 +142,7 @@ All `GET` unless marked. Pages are numbered from 1, `per_page` is at most 200 (d
 Entry statuses: `published`, `provisional`, `generating`, `validating`, `queued`, `needs_repair`, `quarantined`, `candidate`, `retired`. Missed-search statuses: `pending`, `provisional`, `published`, `queued`, `requestable`, `invalid`. Request statuses: `pending`, `approved`, `rejected`; origins: `student` (students asked), `ai_entry` (a Beta AI wrote before reviews existed, hidden until decided) and `related` (an entry links to a word the dictionary lacks; nobody asked, so `students` is 0 until someone does).
 
 **Word requests** (dictionary design §6.7). AI writes entries only for words the owner chose. A real word a student searched for that nobody seeded becomes a request, and only the owner's approval adds it:
-- **Approve** with `lemma` as requested (casing may change), `pos` from `noun`, `verb`, `adjective`, `adverb`, `pronoun`, `determiner`, `preposition`, `conjunction`, `interjection`, `numeral`, `phrase`, and `kind` from `word`, `phrasal_verb`, `idiom`, `phrase`. Offer `options` as the choices, the first selected. A `phrasal_verb` takes `verb`, and an `idiom` or `phrase` takes `phrase`.
+- **Approve** with `lemma` as requested (casing may change), `pos` from `noun`, `verb`, `adjective`, `adverb`, `pronoun`, `determiner`, `preposition`, `conjunction`, `interjection`, `numeral`, `phrase`, and `kind` from `word`, `phrasal_verb`, `idiom`, `phrase`. Offer `options` as the choices, the first selected. A `phrasal_verb` takes `verb`. An `idiom` or a `phrase` takes the word class it works as (*as long as*: `conjunction`; *break the ice*: `verb`), or `phrase` for a whole sentence (*how do you do*); a `word` never takes `phrase` (policy of 2026-10-24). A headword with an object slot at its end (*put up with someone*), *somebody* for *someone*, or a leading *to* before a verb answers 422 `invalid_value`, and `detail` names the headword to use and its pattern (`put up with sb`).
 - **Reject** closes the word: students can't request it again.
 - **Each is final:** deciding a request twice answers 409.
 - **Approved at once:** a student's request or a related word is approved without waiting when the dictionary has no entry for it and its part of speech is clear, and either a curated list or a seed names it (`decided_by` `auto:lists`, setting `auto_approve_listed`) or an entry the owner chose links to it and it's common enough (`ai:related`, setting `auto_approve_related`). Both are on by default. Its `note` says why (`auto: on ngsl; noun/word from Wiktionary, its only one`). No `admin_audit` row: no token made the decision.
@@ -156,8 +156,9 @@ Entry statuses: `published`, `provisional`, `generating`, `validating`, `queued`
 |---|---|---|
 | `cefr`, `meaning`, `definition`, `example`, `spanish`, `content` | `{"fix": "…"}`, and `{"cefr": "B1"}` for `cefr` | Sends the entry to repair: the factory rewrites it with every check, keeping its keys, and students see the published version meanwhile |
 | `part_of_speech` | `{"lemma", "pos", "kind"}` | Adds the word, approved by the owner, queued first |
-| `kind` | `{"pos", "kind"}` | Retires the entry and adds it again under that part of speech and kind |
-| `duplicate` | `{"retire": key, "keep": key}` | Retires `retire` |
+| `kind` | `{"pos", "kind"}` | Retires the entry and adds it again under that part of speech and kind. When only an idiom's or a phrase's part of speech changes, the entry keeps its key and changes in place |
+| `duplicate` | `{"retire": key, "keep": key}`, and `"pattern"` when the retired one is the kept one plus a preposition | Retires `retire`; `keep` gets the pattern (`comply (with sth)`) |
+| `headword` | `{"lemma"}`, with `"pattern"` and `"kind"` when they change | Retires the entry and adds the mended headword (*put up with*, pattern `put up with sb`) |
 | `remove` | `{}` or `{"retire": key}` | Retires the entry |
 
 - **Show `problem`, `proposed` and `evidence`** with each finding, and link `entry_key` and `target_key` to the entry page.

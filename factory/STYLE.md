@@ -155,6 +155,8 @@ Every sense needs it. Write **neutral Latin American Spanish**:
 
 **`regions`** (English): `US`, `UK`, `AU`, `CA`, `IE`, `NZ`, only for a sense used mainly in that region. _flat_ meaning an apartment gets `UK`.
 
+**Labels are never categories.** Slang, informal and offensive are registers on a sense; a region, a field, countable or transitive are labels too. None of them is a `kind` or a part of speech, which describe the whole entry (§14).
+
 ## 10. Patterns and grammar
 
 **`patterns`** show how the word combines:
@@ -163,6 +165,8 @@ Every sense needs it. Write **neutral Latin American Spanish**:
 - Add `+ clause` and `to do sth` where needed.
 - Use a slash for alternatives and parentheses for optional words.
 - Examples: "depend on sb/sth", "realize (that) + clause", "go by bus/car/train", "leave sth somewhere".
+- **A preposition that completes a word's meaning is a pattern of that word, not an entry of its own:** the verb _long_ gets "long for sb/sth", _comply_ gets "comply (with sth)", _look back_ gets "look back (on sth)". The pack's `patterns` carry such forms when an entry was folded into this one; give each a pattern.
+- **Patterns use the short slots above; headwords spell them out** (§14).
 
 **`grammar`:** countability for nouns (`countable`, `uncountable`, `both`) and transitivity for verbs (`transitive`, `intransitive`, `both`). Set it when you're sure, and leave it out otherwise.
 
@@ -171,6 +175,7 @@ Every sense needs it. Write **neutral Latin American Spanish**:
 - At most 6 per sense, most useful first.
 - Each is a short phrase containing the headword, never a sentence: "make a decision", "heavy rain", "a well-known fact".
 - No final period. Use US usage.
+- **Collocations are never headwords.** _heavy rain_ and _make a decision_ belong here and in examples. If a pack's headword is a free collocation rather than a fixed expression, leave the word out and say so.
 
 ## 12. Notes
 
@@ -211,6 +216,20 @@ Add a note only when it truly helps: at most 3 per sense, each at most 300 chara
   - Examples: `en:run_into:phrv`, `en:well-known:adj`.
 
 ## 14. Multiword entries
+
+**Kinds and parts of speech** (the policy of 2026-10-24, `docs/policies/categories-and-headwords.md`). The pack fixes both; this is what they mean, so you write senses that fit them:
+
+| `kind`         | What it is                                                                                    | `pos`                                                    | Examples                                                       |
+| -------------- | --------------------------------------------------------------------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------- |
+| `word`         | One word, or a compound that dictionaries list as its own headword with a word class          | Its word class                                           | _house_, _bus stop_, _well-known_, _upside down_              |
+| `phrasal_verb` | A verb and particle(s) whose meaning is the combination's                                     | `verb`                                                   | _look back_, _put up with_                                     |
+| `idiom`        | A figurative expression: knowing every word doesn't give its meaning                         | What it works as in a sentence                           | _break the ice_ (verb), _a piece of cake_ (noun)               |
+| `phrase`       | Any other fixed expression: complex conjunctions and prepositions, discourse markers, sayings | What it works as; `phrase` only for a whole sentence     | _as long as_ (conjunction), _of course_ (adverb), _how do you do_ (phrase) |
+
+- **One entry per expression.** It takes its main function; another use is a sense of the same entry ("Of course!" is a sense of _of course_, the adverb).
+- **The card shows both:** "idiom · verb", "phrase · conjunction". Write definitions that fit the function: a verb idiom is defined as a verb ("to start a conversation…").
+- **Headwords are bare:** no object slot at the end (_put up with_, never _put up with someone_; the object is a pattern), no _to_ before a verb, no _be_ before an adjective (_fed up_). A slot inside an expression is spelled out: _someone_, _something_, _someone's_, _one's_, _oneself_ (_pull someone's leg_, _keep one's word_).
+- **If the pack's kind, part of speech or headword looks wrong,** leave the word out and say so (§2). Don't write around it.
 
 Phrasal verbs, idioms and phrases need a `pattern`, the sequence the app matches in text:
 

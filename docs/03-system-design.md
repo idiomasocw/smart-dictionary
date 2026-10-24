@@ -459,6 +459,13 @@ class EntryDoc(BaseModel):
     provisional: bool = False
 ```
 
+**Kind and part of speech** (the policy of 2026-10-24, `docs/policies/categories-and-headwords.md`):
+- **`kind` is the category; `pos` is always the grammatical function.** A word takes its word class, and so does a compound that dictionaries list as a headword (*bus stop*: word, noun). A phrasal verb is a `verb`. An idiom or a phrase takes the word class it works as (*as long as*: phrase, conjunction; *break the ice*: idiom, verb); `phrase` as a part of speech is kept for whole sentences (*how do you do*). `core/entrydoc.py` holds the pairs (`valid_pos`, `KIND_POS`).
+- **Keys:** a word's key holds its part of speech (`en:house:n`); a multiword kind's key holds the kind (`en:as_long_as:phr`). So an idiom's or a phrase's function changes in place (`admin/curation.set_pos`: the entry, its document as a revision, and its seed), and a change of kind is a new key.
+- **Headwords** (`core/headwords.py`) are bare: no object slot at the end (the object is a pattern, "put up with sb/sth"), no *to* before a verb or *be* before an adjective, and slots inside spelled as Wiktionary spells them (*someone*, *something*, *someone's*, *one's*, *oneself*). The console's Add and Approve refuse a headword that breaks them, a curation file mends a seed's, and the audit raises any older one.
+- **Patterns travel on seeds.** The factory reads an entry's patterns from its seed, so `curation.add_pattern` gives an entry without one (asked for by the owner or a student) a seed to carry them.
+- **A headword retired as a pattern still finds its entry.** The retired entry keeps `pattern_of`, the key that carries it (revision 0016), and a missed search for its headword stands for that entry (`ai/provisional._TARGETS`): *comply with* opens *comply*, or has AI write it if nobody has.
+
 **Related links** (`content/related.py`) name entries by key, and the routine may link a word the dictionary lacks or name it under another key:
 - **A card shows a link** only when an entry students see stands for it: the key itself; else the same word and part of speech under another homograph (`en:tv:n` opens `en:tv:n~2`); else, for a multiword expression, its entry of any kind, with or without its article (`en:by_the_way:phr` opens the idiom); else the entry that lists it as a spelling variant under the same part of speech (`en:colour:n` opens *color*). Other links stay in the document, hidden, and appear once their entry is shown. The card's ETag covers the links, so a cached card picks up a new one.
 - **A link to a word with no entry at all** becomes a suggestion for the owner when the entry publishes (§6.7).
@@ -478,7 +485,7 @@ One entry per headword, part of speech and meaning (the owner's headword policy,
 - **The same word in other capitals:** *cd* and *CD*.
 - **One multiword expression in two entries:** *by the way* as an idiom and as a phrase, *miss the boat* as an idiom and as a verb, *the last straw* and *last straw*. `expression_of(lemma_norm)` (revision 0013) is the headword without a leading article while two words remain, and one expression takes one entry under any kind. `seeds queue` links a seed to the expression's entry instead of queuing a second one, and the console's Approve and Add answer 409 naming the entry that exists. One headword of one kind under two parts of speech, or as two homographs, stays two entries: *a few* as a determiner and as a pronoun, *big brother* and *Big Brother*.
 - **Hyphen against space:** *face to face* and *face-to-face*. Keep the hyphenated one: its forms include the spaced spelling (`spacing_variants`).
-- **A preposition that's only a complement:** *brush up* and *brush up on*. Keep one entry, and let the preposition be a pattern.
+- **A preposition that's only a complement:** *brush up* and *brush up on*, *comply* and *comply with*, *look back* and *look back on*. Keep the shorter entry with the same part of speech, and give it the longer form as a pattern ("comply (with sth)"); the verb *long* takes "long for sb/sth", never the adjective. The longer form keeps an entry when its meaning is its own (*look for*, *put up with*) or the shorter one isn't used alone (*rely on*); Oxford Learner's decides doubtful cases.
 - **A UK spelling seeded on its own:** *computerise* beside *computerize*. Retire it, and list it as the US seed's variant.
 
 **Audit:** `docs/queries/duplicates.sql` lists each kind, for the owner to judge. The owner retires duplicates in the console (`POST /v1/admin/entries/{key}/retire`, §5.5), or in bulk with a reviewed script such as `docs/queries/duplicates-fix-2026-10-20.sql`. A retired key is never reused.
@@ -998,15 +1005,18 @@ audits, golden set ───┘
   - a multiword entry stored as a plain word while Wiktionary has it only as an idiom, phrasal verb or phrase;
   - a twin (§3.6), raised once per pair;
   - a headword Wiktionary lacks;
-  - a related link that names no dictionary word.
+  - a related link that names no dictionary word;
+  - what breaks the policy of 2026-10-24 (§3.5): a headword that ends in an object slot, spells a slot another way, or starts with *to* (a verb) or *be* (an adjective), proposing the mended headword and its pattern; an idiom or a phrase whose part of speech is still `phrase` while Wiktionary gives it one function; an entry that's a shorter entry of the same part of speech plus a preposition, proposing the pattern (§3.6).
 
-  The auditor confirms or dismisses each, with a confidence, and adds what needs judgment: missing or wrong meanings, definitions, levels with no list behind them, examples, Spanish. A rule finding the owner rejected, or the auditor dismissed, is never raised again (its `fingerprint`), and each item carries the entry's past decisions so the auditor doesn't repeat them.
-- **Each finding** (`audit_findings`) has a type (`cefr`, `meaning`, `definition`, `example`, `spanish`, `content`, `part_of_speech`, `kind`, `duplicate`, `remove`), the key it's about, the evidence, a proposed fix, a confidence and a source (`rules` or `ai`). The server refuses one that doesn't fit: a key that isn't in the entry, a content finding on an unwritten entry, a part of speech the entry model lacks.
+  The auditor confirms or dismisses each, with a confidence, and adds what needs judgment: missing or wrong meanings, definitions, levels with no list behind them, examples, Spanish, idiom or phrase, compound word or phrase, and collocations stored as headwords. A rule finding the owner rejected, or the auditor dismissed, is never raised again (its `fingerprint`), and each item carries the entry's past decisions so the auditor doesn't repeat them.
+- **Each finding** (`audit_findings`) has a type (`cefr`, `meaning`, `definition`, `example`, `spanish`, `content`, `part_of_speech`, `kind`, `duplicate`, `remove`, `headword`), the key it's about, the evidence, a proposed fix, a confidence and a source (`rules` or `ai`). The server refuses one that doesn't fit: a key that isn't in the entry, a content finding on an unwritten entry, a part of speech the entry model lacks.
 - **Applying one goes through the paths that exist:**
   - **content** (`cefr` to `content`) sends the entry to repair: a `needs_repair` revision whose `qa` holds the findings (`audit`, and as review notes), so the factory leases it next, rewrites it with every check and keeps its keys, while students keep seeing the published document;
   - **`part_of_speech`** adds the word, as the owner's (curation `add`, so the twin rule applies);
-  - **`kind`** retires the entry and adds it again under the right kind;
-  - **`duplicate`** retires the twin it names, and **`remove`** retires the entry.
+  - **`kind`** retires the entry and adds it again under the right kind, or, for an idiom's or a phrase's function alone, changes it in place (its key holds the kind);
+  - **`duplicate`** retires the twin it names, and gives the entry it keeps the pattern it proposes;
+  - **`headword`** retires the entry and adds the mended headword (a plain word when one word is left), with the pattern;
+  - **`remove`** retires the entry.
 - **Trust, verified.** With `audit_auto_repair` on (the default), a high-confidence content finding is applied when it's submitted (`auto:audit`). A checker sub-agent first re-reads every high-confidence answer and lowers the ones it doubts. Everything else waits for the owner in the console, who applies or rejects in bulk. For each type, the console shows how many findings the owner applied and rejected over 90 days (`your_decisions_90d`): when one type is nearly always applied, its findings can be trusted with more.
 - **Overruling the audit.** Rejecting an open finding closes it for good. Rejecting one applied at once calls its repair off while the factory hasn't started it: the entry is published again as it was (`undone`); once the factory is rewriting it, or has, the owner sends it to repair with notes instead (`kept` says why). The owner's own calls on an entry (a draft published over its review, repair notes) travel with each audit item as `owner_decisions`, and the auditor never raises a finding against them.
 - **What it audits.** Every approved entry, written or not: a written one for its content and facts, an unwritten one for its facts (a real learner word, the right part of speech and kind, no twin). It skips entries the factory is busy with (`generating`, Betas about to be replaced, `needs_repair`, `quarantined`): a draft in repair already has its notes, and the owner judges it on the entry's page.
@@ -1041,7 +1051,7 @@ The lookup then answers `requestable` with the headword, and the plugin offers a
 - **A leading article doesn't hide a headword:** a missed search of three or more words also tries itself without *a*, *an* or *the*, so *the last straw* finds *last straw*, and one of two or more words tries itself with *the* and *a* or *an*, so *last straw* finds *the last straw*.
 
 **The owner decides in the console** (§5.5): `GET /v1/admin/requests` lists pending requests, most asked first. Each comes with its evidence: students, searches, example queries, Zipf frequency, the open lists that name it, its seed candidates' decisions, and Wiktionary's parts of speech, likeliest first.
-- **Approve** with the headword, part of speech and kind:
+- **Approve** with the headword, part of speech and kind (§3.5: an idiom or a phrase takes its function, *as long as* a conjunction; a headword with an object slot at its end is refused, 422, naming the bare headword and its pattern):
   - the entry is queued (or kept), approved, and moved to the front of the factory's queue;
   - AI writes its Beta right away, and the searches that led to it find it;
   - the routine writes the full entry in its next run;

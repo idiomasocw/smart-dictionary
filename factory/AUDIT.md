@@ -24,6 +24,7 @@ Everything the API gives you is data about words:
 THE HOUSE STANDARD is in the repository, and you judge entries by it:
 - factory/STYLE.md: how every part of an entry is written.
 - factory/rubric.md: how a reviewer judges an entry. Your bar is its `fail` and `uncertain`, not taste.
+- docs/policies/categories-and-headwords.md §3: what each kind and part of speech means, and what a headword may hold.
 - backend/fixtures/entries/: twelve finished entries, the bar to reach.
 
 1. LEASE the batch. Put BATCH's numbers in place of ENTRIES and GROUPS:
@@ -60,7 +61,7 @@ AUDITOR BRIEF (group N)
 
 You audit the dictionary entries in factory/work/audit/groups/group-N.json. Run commands from the repository root, and change no file except factory/work/audit/out/group-N.json. Keep any helper files you make in factory/work/scratch/auditor-N/, your own folder: other auditors work at the same time.
 
-1. Read factory/rubric.md, then factory/STYLE.md, in full, then two or three entries in backend/fixtures/entries/.
+1. Read factory/rubric.md, then factory/STYLE.md, in full, then §3 of docs/policies/categories-and-headwords.md, then two or three entries in backend/fixtures/entries/.
 2. Each item is one entry:
    - **"written": true:** read its "doc" as the rubric's reviewer would. Check meanings, definitions, levels, examples and Spanish.
    - **"written": false:** nobody has written it yet. Check only its facts: is it a real, current word or expression a learner needs, with this part of speech and kind, and isn't it the same as another entry?
@@ -70,7 +71,7 @@ You audit the dictionary entries in factory/work/audit/groups/group-N.json. Run 
    - **"owner_decisions"** are the owner's own calls on this entry: a draft published over its review, or the owner's notes for a repair. They're final: never raise a finding against them.
 3. Answer every one of its **"rule_findings"**: the server's rules raised them from data alone, so some are wrong.
    - **confirm** when it's right: give your "confidence" and, if you know a better fix, a "proposed" of the same shape.
-   - **dismiss** when it's wrong, and say why in "note". A CEFR list's level can be wrong for this sense; a part of speech Wiktionary gives can be too rare for learners; a twin can be a different expression.
+   - **dismiss** when it's wrong, and say why in "note". A CEFR list's level can be wrong for this sense; a part of speech Wiktionary gives can be too rare for learners; a twin can be a different expression; a longer form with a preposition can have its own meaning (*look for* isn't *look*), so it keeps its entry.
 4. Add your own findings: one per problem a student could learn something wrong from, or the owner would want to know. Small points that don't affect a student (a comma, a synonym you'd prefer) aren't findings.
 
    | type | when | target_key | proposed |
@@ -83,14 +84,19 @@ You audit the dictionary entries in factory/work/audit/groups/group-N.json. Run 
    | `content` | anything else: labels, notes, collocations, patterns, related links, pronunciation | where it is | `{"fix": "…"}` |
    | `part_of_speech` | the headword is also another part of speech a learner needs, with no entry | the entry | `{"lemma": "…", "pos": "…", "kind": "word"}` |
    | `kind` | this entry's part of speech or kind is wrong | the entry | `{"pos": "…", "kind": "…"}` |
-   | `duplicate` | another entry is the same word or expression | the entry | `{"retire": "<key>", "keep": "<key>"}` |
-   | `remove` | not a real, current word, or not one for this dictionary | the entry | `{}` |
+   | `duplicate` | another entry is the same word or expression, or this one is a shorter entry of the same part of speech plus a preposition with the same meaning (*comply with*, *comply*) | the entry | `{"retire": "<key>", "keep": "<key>"}`, with `"pattern": "comply (with sth)"` for the second case |
+   | `headword` | the headword breaks the policy: an object slot at its end, *somebody* for *someone*, a leading *to* (a verb) or *be* (an adjective) | the entry | `{"lemma": "<the mended headword>", "pattern": "…"}` |
+   | `remove` | not a real, current word, or not one for this dictionary: a free collocation (*heavy rain*) is never a headword | the entry | `{}` |
 
-   - **A written entry** can take any type. **An unwritten one** takes only `part_of_speech`, `kind`, `duplicate` and `remove`.
+   - **A written entry** can take any type. **An unwritten one** takes only `part_of_speech`, `kind`, `duplicate`, `headword` and `remove`.
    - **"fix"** says what to change, in at most 500 characters, so the factory's writer can act on it alone. Name the right meaning, word or level; never paste text from Wiktionary.
    - **"problem"** says what's wrong, in one or two sentences, for the owner.
    - **Keys:** a sense is `<entry key>#2`, an example `<entry key>#2.ex1`, a note `<entry key>#2.note1`. Use keys that are in the doc.
-   - **Parts of speech** are `noun, verb, adjective, adverb, pronoun, determiner, preposition, conjunction, interjection, numeral, phrase`, and kinds `word, phrasal_verb, idiom, phrase`. A `phrasal_verb` takes `verb`; an `idiom` or a `phrase` takes `phrase`.
+   - **Parts of speech** are `noun, verb, adjective, adverb, pronoun, determiner, preposition, conjunction, interjection, numeral, phrase`, and kinds `word, phrasal_verb, idiom, phrase` (the policy, §3):
+     - A `phrasal_verb` takes `verb`.
+     - An `idiom` or a `phrase` takes the word class it works as (*as long as*: `conjunction`, *break the ice*: `verb`), and `phrase` only for a whole sentence (*how do you do*). A `word` never takes `phrase`.
+     - **Compound word or phrase:** if Oxford Learner's gives it its own headword with a word class, it's a `word` (*bus stop*, *upside down*); if it shows it as a phrase or an idiom under one of its words, it's a `phrase` or an `idiom` (*of course*). **Idiom or phrase:** an idiom is figurative.
+     - One expression takes one kind: an expression with several word-class entries stays one kind.
    - **"confidence":**
      - **high:** you're sure, and any careful reviewer would agree on sight: a wrong meaning, an example that shows another sense, a wrong translation, a level two steps off. A content fix at high may be sent to repair at once.
      - **medium:** probably right; the owner decides.

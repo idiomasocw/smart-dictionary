@@ -44,6 +44,7 @@ uv run smart-dictionary seeds import       # seed_candidates from the owner's an
 uv run smart-dictionary seeds export       # the ranked candidates, to data/raw/seed-candidates.csv
 uv run smart-dictionary seeds queue --dry-run --limit 20   # what would be queued next, by priority
 uv run smart-dictionary seeds curate --file data/seeds/curation/<file>.csv --dry-run  # a reviewed curation file
+uv run smart-dictionary seeds functions --dry-run   # idioms and phrases take the one function Wiktionary gives
 uv run smart-dictionary requests sync --dry-run  # suggest what entries link to; approve what the rule allows
 uv run smart-dictionary factory token --name routine       # a factory bearer token, shown once
 uv run smart-dictionary admin token --name lms             # the LMS console's admin token, shown once

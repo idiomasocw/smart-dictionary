@@ -1,6 +1,6 @@
--- Owner reviews, for Supabase's SQL Editor (2026-10-20). Blocks 1, 3 and 5 only read. Blocks
--- 2, 4 and 6 change entries: run each on its own, by selecting it. Block 2 is for after the
--- deploy that exempts a headword from its own V10; blocks 5 and 6 need migration 0013.
+-- Owner reviews, for Supabase's SQL Editor (2026-10-20). Blocks 1, 3, 5 and 7 only read.
+-- Blocks 2, 4 and 6 change entries: run each on its own, by selecting it. Block 2 is for after
+-- the deploy that exempts a headword from its own V10; blocks 5 and 6 need migration 0013.
 
 -- 1. Quarantined entries and why: the checks their latest submission failed.
 select e.key, e.cefr, r.created_at,
@@ -92,3 +92,31 @@ update entries set status = 'retired', updated_at = now()
 where published_at is null and status::text in ('candidate', 'queued')
   and key in ('en:miss_the_boat:v', 'en:last_straw:idiom')
 returning key;
+
+-- 7. The policy of 2026-10-24 on categories and headwords
+--    (docs/policies/categories-and-headwords.md), one rule per row. The audit raises each of
+--    these as a finding too; this lists them all at once.
+--    - headword: it ends in an object slot, spells a slot another way, or starts with "to"
+--      (a verb) or "be" (an adjective);
+--    - function: an idiom or a phrase whose part of speech is still "phrase";
+--    - pattern?: another entry of the same part of speech plus a preposition (comply with,
+--      comply), which may be only a pattern of it.
+select 'headword' as rule, key, lemma, pos, kind::text as kind, status::text as status
+from entries
+where status <> 'retired' and lemma like '% %'
+  and (lemma ~* ' (someone|somebody|something|sb|sth|sb/sth)$'
+       or lemma ~* '(^| )(somebody|somebody''s|sb|sb''s|sth)( |$)'
+       or (lemma ~* '^to ' and pos = 'verb') or (lemma ~* '^be ' and pos = 'adjective'))
+union all
+select 'function', key, lemma, pos, kind::text, status::text
+from entries
+where status <> 'retired' and kind in ('idiom', 'phrase') and pos = 'phrase'
+union all
+select 'pattern?', e.key, e.lemma || '  (of ' || s.key || ')', e.pos, e.kind::text,
+       e.status::text
+from entries e
+join entries s on s.lemma_norm = regexp_replace(e.lemma_norm, ' [^ ]+$', '')
+              and s.pos = e.pos and s.status <> 'retired'
+where e.status <> 'retired' and e.lemma_norm like '% %'
+  and e.lemma_norm ~ ' (on|with|to|for|of|in|at|about|from|into|over|against|by|upon)$'
+order by 1, 2;
